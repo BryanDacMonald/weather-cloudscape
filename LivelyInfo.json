@@ -1,0 +1,14 @@
+{
+  "AppVersion": "2.0.0.0",
+  "Title": "Weather Cloudscape",
+  "Thumbnail": "thumbnail.jpg",
+  "Preview": null,
+  "Desc": "Volumetric clouds driven by your live local weather (Open-Meteo), with the real sun position, rain, snow and lightning. Use the procedural valley or your own background image. Based on Cloudscape by Michael Cook (MIT).",
+  "Author": "Weather Cloudscape",
+  "License": "MIT",
+  "Contact": "https://github.com/Fishypants/cloudscape",
+  "Type": 1,
+  "FileName": "index.html",
+  "Arguments": null,
+  "IsAbsolutePath": false
+}
