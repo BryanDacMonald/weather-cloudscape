@@ -9,12 +9,13 @@ const path = require('path'), fs = require('fs');
   p.on('pageerror', e => console.log('[pageerror]', e.message));
   await p.route(/^https:/, r => r.abort());
   await p.goto('file://' + path.resolve(__dirname, '../index.html') +
-    '?liveWeather=0&manualCover=0&fpsCap=60&dynres=0&quality=High&precip=0&showWx=0&bgMode=Procedural%20landscape&bgImage=');
+    '?liveWeather=0&manualCover=0&fpsCap=10&dynres=0&quality=High&precip=0&showWx=0&bgMode=Procedural%20landscape&bgImage=');
   await p.waitForFunction(() => window.__wcs && __wcs.frame > 2, null, {timeout: 300000});
   await p.evaluate(() => { Object.assign(__wcs.P, {time: 12.5, heading: -19, flare: 0, bloom: 0.1, vignette: 0, distort: 0, ca: 0}); });
   const f0 = await p.evaluate(() => __wcs.frame);
   await p.waitForFunction(f0 => __wcs.frame >= f0 + 12, f0, {timeout: 600000, polling: 500});
-  const shot = await p.screenshot({type: 'png'});
+  await p.evaluate(() => document.querySelectorAll('body > div').forEach(d => d.style.display = 'none'));
+  const shot = await p.screenshot({type: 'png', timeout: 600000});
   // sky mask from the terrain depth target (sky = no terrain hit)
   const mask = await p.evaluate(() => {
     gl.bindFramebuffer(gl.FRAMEBUFFER, R.terrainFB); gl.readBuffer(gl.COLOR_ATTACHMENT1);
@@ -23,7 +24,7 @@ const path = require('path'), fs = require('fs');
     const out = new Uint8Array(S.W * S.H);
     for (let y = 0; y < S.H; y++) for (let x = 0; x < S.W; x++)
       out[(S.H - 1 - y) * S.W + x] = buf[(y * S.W + x) * 4] < 1e5 ? 255 : 0;   // flip to top-down
-    return {w: S.W, h: S.H, a: btoa(String.fromCharCode(...out.subarray(0, 0))) , raw: Array.from(out)};
+    return {w: S.W, h: S.H, raw: Array.from(out)};
   });
   // composite screenshot + alpha in a scratch page
   const q = await b.newPage();

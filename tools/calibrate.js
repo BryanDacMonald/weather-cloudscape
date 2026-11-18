@@ -7,7 +7,7 @@ const TYPES = {
   stratus: {ctype: 0.08, density: 0.35, cthick: 1.6, cbottom: 1.0, erosion: 0.3},
   cumulus: {ctype: 0.85, density: 0.19, cthick: 2.2, cbottom: 1.5, erosion: 0.45},
 };
-const COVS = Array.from({length: 21}, (_, i) => i / 20);
+const COVS = [0, ...Array.from({length: 21}, (_, i) => +(0.3 + i * 0.025).toFixed(3)), 1];
 (async () => {
   const b = await chromium.launch({args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist']});
   const p = await b.newPage({viewport: {width: 200, height: 200}});
@@ -26,7 +26,7 @@ const COVS = Array.from({length: 21}, (_, i) => i / 20);
     result[name] = [];
     for (const cov of COVS){
       let blocked = 0, total = 0;
-      for (let k = 0; k < 16; k++){
+      for (let k = 0; k < 8; k++){
         // spread positions over the 45 km weather-map tile
         const x = ((k * 7.31) % 45) - 22.5, z = ((k * 13.7) % 45) - 22.5;
         const f0 = await p.evaluate(({t, cov, x, z}) => {
