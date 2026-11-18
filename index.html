@@ -2220,7 +2220,8 @@ function render(now){
   // ---- volumetrics (low res) ----
   fullscreen(PR.vol, R.cur.fb, S.low[0], S.low[1], {
     uSceneDepth: R.tDepth, uLowSize: S.low, uFullSize: [S.W, S.H], uFrame: frame,
-    uShafts: P.shafts, uCloudFar: 180, uAmbient: P.ambient, uSharp: P.sharp, uCrease: P.crease,
+    // at night the sky-light floor x auto-exposure makes clouds glow; fade their ambient so they read as dark shapes
+    uShafts: P.shafts, uCloudFar: 180, uAmbient: P.ambient * (0.25 + 0.75 * smooth(-0.21, 0.0, L[1])), uSharp: P.sharp, uCrease: P.crease,
     uCloudSteps: q.cloud, uLightSteps: q.light, uAtmoSteps: q.atmo,
   });
 
@@ -2757,11 +2758,11 @@ const Bg = (() => {
     B.relightT = now;
     const el = Math.asin(clamp(L[1], -1, 1)) / DEG;
     const day = smooth(-9, 5, el), low = (1 - smooth(1, 18, el)) * day, oc = clamp(overcast, 0, 1);
-    const lum = (0.07 + 0.93 * day) * (1 - 0.45 * oc * day);
+    const lum = (0.04 + 0.96 * day) * (1 - 0.45 * oc * day);
     let r = lum * (1 + 0.04 * low), g = lum * (1 - 0.16 * low), b = lum * (1 - 0.36 * low);
     r *= 1 - 0.35 * (1 - day); g *= 1 - 0.2 * (1 - day);          // moonlit blue
     b *= 1 + 0.06 * oc * day;                                        // overcast: slightly cool
-    const k = P.relight, M = [1 + (r - 1) * k, 1 + (g - 1) * k, 1 + (b - 1) * k].map(v => v.toFixed(3));
+    const k = P.relight, M = [r, g, b].map(v => Math.pow(Math.max(v, 1e-4), k).toFixed(3));   // blend in log space so night stays dark
     const key = M.join();
     if (key === B.relightKey) return;
     B.relightKey = key;

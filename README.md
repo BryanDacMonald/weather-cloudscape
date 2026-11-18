@@ -53,7 +53,7 @@ Every 15 minutes the wallpaper reads Open-Meteo's *current* conditions for your 
 
 ### What "accurate" means here, and its limits
 
-- **Cloud cover is calibrated.** The renderer's coverage knob isn't a percentage. It was measured by rendering the sky straight overhead at many positions and counting how much of it the clouds block (`tools/calibrate.js`). 60% cover in the data gives about 60% of the overhead sky covered.
+- **Cloud cover is calibrated.** The renderer's coverage knob isn't a percentage: the whole clear-to-overcast range happens between about 0.3 and 0.8 on it. It was measured by looking straight down on the entire cloud map and counting the area where clouds block more than half the light (`tools/calibrate.js`). On a separate set of positions, requests for 10/25/50/75/90% came out within 1.5 points for both stratus and cumulus.
 - **It's forecast-model data, not a camera.** Open-Meteo's "current" values are a weather model's estimate for a grid cell a few kilometres wide, updated every 15 minutes. The *amount and type* of cloud should match what you see outside. The *positions* of individual clouds are made up.
 - **Near the horizon, clouds look denser than the percentage.** That's real-world perspective too: you see the sides of distant clouds.
 - **No true cirrus.** High wispy cloud is drawn as a thin, translucent high layer.
