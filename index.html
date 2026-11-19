@@ -1464,22 +1464,35 @@ vec3 realStars(vec3 rd){
     vec4 c = texelFetch(uStarData, ivec2((id + 1) % 4096, (id + 1) / 4096), 0);
     float sig = uStarParams.z * c.w;
     vec3 dv = v - a.xyz;                                  // chord length: precise for tiny angles
-    acc += c.rgb * (uStarParams.x * exp2(-0.7308 * a.w) * vis * exp(-0.5 * dot(dv, dv) / (sig * sig)));   // 10^(-0.22 m)
+    acc += c.rgb * (uStarParams.x * exp2(-0.6312 * a.w) * vis * exp(-0.5 * dot(dv, dv) / (sig * sig)));   // 10^(-0.19 m): display-compressed magnitudes
   }
   return acc;
 }
-// the big lunar maria, in orthographic selenographic coordinates (x east, y north; radius 1)
+// the lunar maria, in orthographic selenographic coordinates (x east, y north; disk radius 1)
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), f.x), mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), f.x), f.y);
+}
 float moonAlbedo(vec2 p){
-  const vec4 M[13] = vec4[13](
-    vec4(-0.226, 0.542, 0.30, 0.42), vec4(0.266, 0.469, 0.19, 0.42), vec4(0.515, 0.148, 0.24, 0.40), vec4(0.820, 0.292, 0.13, 0.42),
-    vec4(0.773, -0.136, 0.17, 0.36), vec4(0.561, -0.262, 0.12, 0.34), vec4(-0.266, -0.363, 0.19, 0.36), vec4(-0.568, -0.413, 0.12, 0.36),
-    vec4(-0.800, 0.316, 0.33, 0.38), vec4(-0.62, -0.05, 0.22, 0.32), vec4(-0.18, 0.80, 0.12, 0.30), vec4(0.22, 0.82, 0.11, 0.30),
-    vec4(0.061, 0.230, 0.09, 0.30));
-  float a = 1.0;
-  for (int i = 0; i < 13; i++){ float d = length(p - M[i].xy); a -= M[i].w * (1.0 - smoothstep(M[i].z * 0.45, M[i].z, d)); }
-  a += 0.25 * (1.0 - smoothstep(0.0, 0.07, length(p - vec2(-0.144, -0.686))));   // Tycho
-  a *= 0.92 + 0.08 * hash12(floor(p * 60.0));                                       // speckle
-  return max(a, 0.45);
+  // centre (x, y), radius, darkness: Imbrium, Serenitatis, Tranquillitatis, Crisium, Fecunditatis, Nectaris, Nubium,
+  // Humorum, Procellarum (4 lobes), Insularum, Cognitum, Frigoris (2), Vaporum
+  const vec4 M[18] = vec4[18](
+    vec4(-0.24, 0.53, 0.34, 0.40), vec4(0.27, 0.47, 0.21, 0.42), vec4(0.50, 0.15, 0.27, 0.40), vec4(0.80, 0.29, 0.15, 0.42),
+    vec4(0.75, -0.14, 0.20, 0.34), vec4(0.55, -0.27, 0.12, 0.32), vec4(-0.27, -0.36, 0.21, 0.32), vec4(-0.57, -0.41, 0.12, 0.34),
+    vec4(-0.80, 0.32, 0.30, 0.36), vec4(-0.64, 0.05, 0.26, 0.34), vec4(-0.55, 0.46, 0.22, 0.34), vec4(-0.74, -0.20, 0.20, 0.32),
+    vec4(-0.50, 0.13, 0.15, 0.30), vec4(-0.33, -0.17, 0.13, 0.28), vec4(-0.20, 0.80, 0.13, 0.28), vec4(0.25, 0.82, 0.12, 0.28),
+    vec4(0.06, 0.23, 0.09, 0.28), vec4(0.33, 0.30, 0.12, 0.26));
+  float n = vnoise(p * 7.0) * 0.6 + vnoise(p * 17.0) * 0.4;           // ragged shorelines
+  float dark = 0.0;
+  for (int i = 0; i < 18; i++){
+    float d = length(p - M[i].xy) / M[i].z + (n - 0.5) * 0.55;
+    dark = max(dark, M[i].w * 1.35 * (1.0 - smoothstep(0.55, 1.05, d)));
+  }
+  float a = 1.0 - dark;
+  a += 0.22 * (1.0 - smoothstep(0.0, 0.06, length(p - vec2(-0.144, -0.686))));   // Tycho
+  a += 0.12 * (1.0 - smoothstep(0.0, 0.05, length(p - vec2(-0.37, 0.17))));      // Copernicus
+  a *= 0.9 + 0.1 * vnoise(p * 40.0);                                               // highland texture
+  return a;
 }
 vec3 moonDisk(vec3 rd, vec3 P0){
   if (uMoonParams.w < 0.5) return vec3(0.0);
@@ -2942,7 +2955,7 @@ const Bg = (() => {
     B.relightT = now;
     const el = Math.asin(clamp(L[1], -1, 1)) / DEG;
     const day = smooth(-9, 5, el), low = (1 - smooth(1, 18, el)) * day, oc = clamp(overcast, 0, 1);
-    const lum = (0.04 + 0.1 * moon * (1 - oc) * (1 - day) + 0.96 * day) * (1 - 0.45 * oc * day);
+    const lum = (0.04 + 0.06 * moon * (1 - oc) * (1 - day) + 0.96 * day) * (1 - 0.45 * oc * day);
     let r = lum * (1 + 0.04 * low), g = lum * (1 - 0.16 * low), b = lum * (1 - 0.36 * low);
     r *= 1 - 0.35 * (1 - day); g *= 1 - 0.2 * (1 - day);          // moonlit blue
     b *= 1 + 0.06 * oc * day;                                        // overcast: slightly cool
@@ -3117,7 +3130,7 @@ const Sky = (() => {
     let mx = 0; for (const c of cnt) mx = Math.max(mx, c);
     K.maxPerBin = mx;
   }
-  const psf = m => clamp(0.6 + 0.2 * (2.5 - m), 0.6, 1.7);   // brighter -> slightly larger point
+  const psf = m => clamp(0.75 + 0.22 * (2.5 - m), 0.75, 1.8);   // brighter -> slightly larger point; >= 0.75 px so none fall between pixels
   function entries(b){
     if (!K.stars) K.stars = Ephem.unpackStars(STAR_DATA);
     const S = K.stars, out = [];
@@ -3160,7 +3173,7 @@ const Sky = (() => {
     const limit = LIMIT[P.skyDark] - 1.6 * K.moonLight;
     const ma = 0.006 * K.moonLight * (1 - day) * (1 - 0.7 * Weather.overcast());   // clouds dim it
     return {uMoonAmb: [0.75 * ma, 0.85 * ma, 1.0 * ma], uStarParams: [0.02 * P.starBright, limit, pixAng, 1], uJ2000FromWorld: W2J, uStarBins: T.bins, uStarIdx: T.idx, uStarData: T.data,
-      uMoonDir: md, uMoonUp: up, uMoonParams: [radius, 1.56e-6 * (0.18 + 0.82 * day), 0.004, 1], uMoonGlow: [0.55 * glow, 0.68 * glow, 1.0 * glow]};
+      uMoonDir: md, uMoonUp: up, uMoonParams: [radius, 1.56e-6 * (0.13 + 2.37 * day), 0.004, 1], uMoonGlow: [0.55 * glow, 0.68 * glow, 1.0 * glow]};
   }
   return {update, moonLight: () => K.moonLight, active: () => K.active, state: K, rebuild: () => { K.key = ''; }};
 })();

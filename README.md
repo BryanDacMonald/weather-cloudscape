@@ -1,6 +1,6 @@
 # Weather Cloudscape: a live-weather desktop wallpaper for Windows
 
-Real-time volumetric clouds that follow **your actual local weather**: cloud cover, cloud type, cloud base height, wind direction and speed, haze/fog, rain, snow and lightning. The sun sits where it really is in your sky right now. You can keep the procedural mountain valley, or use **your own background image** and the rendered sky shows through behind it.
+Real-time volumetric clouds that follow **your actual local weather**: cloud cover, cloud type, cloud base height, wind direction and speed, haze/fog, rain, snow and lightning. The sun, Moon, planets and stars sit where they really are in your sky right now. You can keep the procedural mountain valley, or use **your own background image** and the rendered sky shows through behind it.
 
 It is a fork of [Cloudscape](https://github.com/Fishypants/cloudscape) by Michael Cook (MIT). The renderer is a single HTML file with no dependencies. Weather comes from [Open-Meteo](https://open-meteo.com/), which needs no API key.
 
@@ -59,6 +59,19 @@ Every 15 minutes the wallpaper reads Open-Meteo's *current* conditions for your 
 - **No true cirrus.** High wispy cloud is drawn as a thin, translucent high layer.
 - **One cloud layer at a time.** When several layers are reported, the dominant one is drawn.
 
+## The night sky
+
+With live weather on, the night sky is the real one for your location and time:
+
+- **Stars:** every star in the Yale Bright Star Catalogue down to magnitude 6.5 (8,404 stars), with real colours. The sky turns through the night, so constellations rise and set as they really do.
+- **Moon:** correct position (including its ~1° parallax), phase, tilt, and its dark seas (maria). Moonlight brightens the night sky, clouds, the ground and your photo, and washes out faint stars.
+- **Planets:** Mercury, Venus, Mars, Jupiter and Saturn, at their real positions and brightness.
+- **Clouds** hide everything behind them, so stars show only where the weather says the sky is clear.
+
+Settings: **Sky darkness** (City / Suburban / Rural / Dark site) sets how many stars you see. Pick what matches your sky; a suburban sky shows a few hundred stars, a dark site thousands. **Moon size** can be enlarged (1 = true size, which is small on screen). **View faces** must be set to the compass direction your view or photo really faces, or the sky will be the one behind you.
+
+Accuracy: positions are good to a few arcminutes (a tenth of the Moon's width). `tools/test-sky.js` checks them against real events: the 2017 and 2024 total solar eclipses (computed Moon within 0.04° of the Sun's centre from the path of totality), the 2000 lunar eclipse, the 2020 Jupiter–Saturn great conjunction, and Mars's 2020 opposition. Star brightness is compressed to suit a screen, and the Moon is dimmed at night so its seas stay visible, the way your eye sees it.
+
 ## Running it in a browser
 
 Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings panel: the wallpaper settings on top, then every Cloudscape renderer setting. Settings and your chosen image are saved in the browser. URL parameters also work, e.g. `index.html?location=Oslo&bgMode=Image&panel=1`.
@@ -77,8 +90,10 @@ Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings 
 | `LivelyInfo.json`, `LivelyProperties.json` | Lively Wallpaper metadata and Customise panel |
 | `images/sample-valley.png` | Sample foreground with a transparent sky |
 | `tools/calibrate.js` | Re-measures the cloud cover calibration (Node + Playwright) |
+| `tools/test-sky.js` | Checks Moon, planet and star positions against known astronomical events (`node tools/test-sky.js`) |
+| `tools/make-starcat.py` | Packs the star catalogue into `index.html` |
 | `tools/make-sample.js` | Regenerates the sample image |
 
 ## License
 
-MIT. Original renderer © 2026 Michael Cook ([Cloudscape](https://github.com/Fishypants/cloudscape)). Weather data by [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0).
+MIT. Original renderer © 2026 Michael Cook ([Cloudscape](https://github.com/Fishypants/cloudscape)). Weather data by [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0). Star data: Yale Bright Star Catalogue, 5th ed. (Hoffleit & Warren, public domain), via the JSON edition by Bretton Wade ([MIT](https://github.com/brettonw/YaleBrightStarCatalog)). Moon and planet positions: Paul Schlyter's method; planet magnitudes partly from Mallama & Hilton (2018).
