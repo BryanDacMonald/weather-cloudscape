@@ -108,6 +108,12 @@ const SCHEMA = [
   {id:'imgFov',   label:'Sky FOV',     min:20,   max:100, step:1,    v:55,   fmt:v=>Math.round(v)+'°'},
   {id:'relight',  label:'Relight image', min:0,  max:1,   step:0.01, v:0.85, fmt:f2},
   {id:'bgExport', label:'Save cut-out PNG', type:'button', on:()=>Bg.exportCutout()},
+  {sec:'Night sky'},
+  {id:'realSky',  label:'Real stars, Moon & planets for your location', type:'check', v:true},
+  {id:'planets',  label:'Planets', type:'check', v:true, on:()=>Sky.rebuild()},
+  {id:'skyDark',  label:'Sky darkness', type:'select', options:['City','Suburban','Rural','Dark site'], v:'Suburban', on:NOP},
+  {id:'starBright', label:'Star brightness', min:0, max:3, step:0.05, v:1, fmt:f2},
+  {id:'moonScale', label:'Moon size', min:1, max:4, step:0.1, v:1, fmt:v=>v.toFixed(1)+'× real'},
   {sec:'Wallpaper performance'},
   {id:'fpsCap',   label:'Frame cap',   type:'select', options:['10','15','20','30','60'], v:'30', on:NOP},
   {id:'interactive', label:'Mouse look / WASD fly (off for wallpaper use)', type:'check', v:false, on:()=>canvas.classList.toggle('interactive', P.interactive)},
@@ -252,7 +258,8 @@ function setParam(id, v){
 function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.el){ s.el.textContent = text || ''; s.el.style.display = text ? '' : 'none'; } }
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
-  'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres']);
+  'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
+  'realSky','planets','skyDark','starBright','moonScale']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -269,6 +276,7 @@ function settingChanged(id){
 }
 function compass(d){ return ['N','NE','E','SE','S','SW','W','NW'][Math.round(((d % 360) + 360) % 360 / 45) % 8]; }
 
+const STAR_N = 32;   // star bins per cube face edge
 const QUALITY = {
   Low:    {scale:0.35, cloud:48,  light:4, atmo:16, cshadow:512,  maxPix:2.4e6},
   Medium: {scale:0.5,  cloud:80,  light:5, atmo:24, cshadow:768,  maxPix:2.4e6},
@@ -286,6 +294,7 @@ precision highp sampler2D;
 precision highp sampler3D;
 precision highp sampler2DShadow;
 precision highp sampler2DArrayShadow;
+precision highp usampler2D;
 `;
 
 const COMMON = `
@@ -317,6 +326,7 @@ uniform float uCloudBottom, uCloudTop, uCoverage, uCloudType, uCloudDensity, uEr
 uniform float uShapeScale, uMidScale, uFineScale, uMidAmt, uFineAmt;   // km per texture tile / erosion weights
 uniform vec3 uOctW;                                                   // detail octave weights (roughness)
 uniform vec3 uWind, uWindDir;
+uniform vec3 uMoonAmb;   // soft moonlight on the ground at night
 
 uniform sampler2D uCloudShadow;
 uniform sampler2DArrayShadow uTerrainShadow;   // 3 cascades (layers), 2048^2 each
@@ -952,7 +962,7 @@ void main(){
   float NdL = max(dot(n, uSunDir), 0.0);
   vec3 sunT = transmittanceToSun(P, uSunDir);
   float sh = terrainShadowC(W, n, 1.0, true) * cloudShadowAt(W, -1.0);
-  vec3 amb = texelFetch(uIrr, ivec2(0, 0), 0).rgb * mix(1.0, 0.6, uCoverage);
+  vec3 amb = texelFetch(uIrr, ivec2(0, 0), 0).rgb * mix(1.0, 0.6, uCoverage) + uMoonAmb;
   float ao = saturate(0.7 + cav * 4.0) * (0.6 + 0.4 * n.y);
   ao *= mix(1.0, mix(0.45, 1.0, cb), canopyW);
   float tao = treeContactAO(W);
@@ -1131,7 +1141,7 @@ void main(){
   float diff = saturate((ndl + 0.25) / 1.25);            // wrapped: foliage scatters light around the canopy
   float back = pow(saturate(dot(-v, uSunDir)), 3.0) * saturate(0.6 - ndl * 0.5);
   vec3 trans = vec3(0.30, 0.42, 0.08) * vTint * back;   // backlit leaves glow
-  vec3 amb = texelFetch(uIrr, ivec2(0, 0), 0).rgb * mix(1.0, 0.6, uCoverage) * (0.55 + 0.45 * nb.y) * ao;
+  vec3 amb = (texelFetch(uIrr, ivec2(0, 0), 0).rgb * mix(1.0, 0.6, uCoverage) + uMoonAmb) * (0.55 + 0.45 * nb.y) * ao;
   vec3 col = alb * (sunL * diff * mix(0.5, 1.0, ao) / PI + amb) + sunL * trans * ao * 0.08;
   // vertical gradient: at full strength the base of the tree is near black, fading up to
   // unchanged brightness at the top of the crown
@@ -1424,6 +1434,70 @@ uniform sampler2D uTerrainColor, uSceneDepth, uVol0, uVol1, uVol2, uVol3;
 uniform vec2 uLowSize;
 uniform float uSunRadius;
 out vec4 o;
+// ---- real night sky: catalogue stars + planets (binned on a cube), Moon disk, moonlit sky glow ----
+uniform highp usampler2D uStarBins, uStarIdx;   // per bin (start, count); flat list of entry ids
+uniform sampler2D uStarData;                     // 2 texels per entry: (J2000 dir, magnitude), (colour, PSF scale)
+uniform mat3 uJ2000FromWorld;
+uniform vec4 uStarParams;                        // brightness, limiting magnitude, pixel angle (rad), enabled
+uniform vec3 uMoonDir, uMoonUp, uMoonGlow;
+uniform vec4 uMoonParams;                        // angular radius (rad), radiance scale, earthshine, enabled
+const int STAR_N = ${STAR_N};
+ivec2 starBin(vec3 v){
+  vec3 a = abs(v); int face; vec2 uv;
+  if (a.x >= a.y && a.x >= a.z){ face = v.x > 0.0 ? 0 : 1; uv = v.yz / a.x; }
+  else if (a.y >= a.z){ face = v.y > 0.0 ? 2 : 3; uv = v.xz / a.y; }
+  else { face = v.z > 0.0 ? 4 : 5; uv = v.xy / a.z; }
+  ivec2 ij = clamp(ivec2(floor((uv * 0.5 + 0.5) * float(STAR_N))), ivec2(0), ivec2(STAR_N - 1));
+  return ivec2(face * STAR_N + ij.x, ij.y);
+}
+vec3 realStars(vec3 rd){
+  vec3 v = uJ2000FromWorld * rd;
+  uvec2 sc = texelFetch(uStarBins, starBin(v), 0).xy;
+  vec3 acc = vec3(0.0);
+  for (uint k = 0u; k < 40u; k++){
+    if (k >= sc.y) break;
+    uint e = sc.x + k;
+    int id = int(texelFetch(uStarIdx, ivec2(int(e % 4096u), int(e / 4096u)), 0).r) * 2;
+    vec4 a = texelFetch(uStarData, ivec2(id % 4096, id / 4096), 0);
+    float vis = 1.0 - smoothstep(uStarParams.y - 0.7, uStarParams.y + 0.2, a.w);
+    if (vis <= 0.0) continue;
+    vec4 c = texelFetch(uStarData, ivec2((id + 1) % 4096, (id + 1) / 4096), 0);
+    float sig = uStarParams.z * c.w;
+    vec3 dv = v - a.xyz;                                  // chord length: precise for tiny angles
+    acc += c.rgb * (uStarParams.x * exp2(-0.7308 * a.w) * vis * exp(-0.5 * dot(dv, dv) / (sig * sig)));   // 10^(-0.22 m)
+  }
+  return acc;
+}
+// the big lunar maria, in orthographic selenographic coordinates (x east, y north; radius 1)
+float moonAlbedo(vec2 p){
+  const vec4 M[13] = vec4[13](
+    vec4(-0.226, 0.542, 0.30, 0.42), vec4(0.266, 0.469, 0.19, 0.42), vec4(0.515, 0.148, 0.24, 0.40), vec4(0.820, 0.292, 0.13, 0.42),
+    vec4(0.773, -0.136, 0.17, 0.36), vec4(0.561, -0.262, 0.12, 0.34), vec4(-0.266, -0.363, 0.19, 0.36), vec4(-0.568, -0.413, 0.12, 0.36),
+    vec4(-0.800, 0.316, 0.33, 0.38), vec4(-0.62, -0.05, 0.22, 0.32), vec4(-0.18, 0.80, 0.12, 0.30), vec4(0.22, 0.82, 0.11, 0.30),
+    vec4(0.061, 0.230, 0.09, 0.30));
+  float a = 1.0;
+  for (int i = 0; i < 13; i++){ float d = length(p - M[i].xy); a -= M[i].w * (1.0 - smoothstep(M[i].z * 0.45, M[i].z, d)); }
+  a += 0.25 * (1.0 - smoothstep(0.0, 0.07, length(p - vec2(-0.144, -0.686))));   // Tycho
+  a *= 0.92 + 0.08 * hash12(floor(p * 60.0));                                       // speckle
+  return max(a, 0.45);
+}
+vec3 moonDisk(vec3 rd, vec3 P0){
+  if (uMoonParams.w < 0.5) return vec3(0.0);
+  float c = dot(rd, uMoonDir), Rm = uMoonParams.x;
+  vec3 t = (rd - uMoonDir * c) / Rm;                    // offset on the disk, in units of its radius
+  float r2 = dot(t, t);
+  if (c < 0.0 || r2 > 1.6) return vec3(0.0);
+  float edge = clamp((1.0 - sqrt(r2)) * Rm / max(uStarParams.z, 1e-6) + 0.5, 0.0, 1.0);   // 1-pixel antialiased limb
+  if (edge <= 0.0) return vec3(0.0);
+  float mu = sqrt(max(0.0, 1.0 - r2));
+  vec3 n = t - uMoonDir * mu;                           // surface normal facing us
+  float mu0 = dot(n, uSunDir);
+  float ls = mu0 > 0.0 ? 2.0 * mu0 / (mu0 + mu) : 0.0;  // Lommel-Seeliger: an evenly bright full moon, soft terminator
+  vec3 right = normalize(cross(uMoonDir, uMoonUp));
+  float alb = moonAlbedo(vec2(dot(t, right), dot(t, uMoonUp)));
+  vec3 base = uSunIllum * uSunBright * 1500.0 * uMoonParams.y * transmittanceToSun(P0, uMoonDir);
+  return base * (alb * ls + uMoonParams.z * alb) * edge;
+}
 vec3 stars(vec3 rd){
   vec3 p = rd * 220.0;
   vec3 id = floor(p);
@@ -1468,7 +1542,10 @@ void main(){
   if (terr) bg = texelFetch(uTerrainColor, ip, 0).rgb;
   else if (raySphere(P0, rd, Rg) < 0.0){
     float night = 1.0 - smoothstep(-0.12, 0.05, uSunDir.y);
-    bg = stars(rd) * night;
+    bg = (uStarParams.w > 0.5 ? realStars(rd) : stars(rd)) * night;
+    float cm = dot(rd, uMoonDir);
+    bg += uMoonGlow * ((0.55 + 0.45 * (1.0 - max(rd.y, 0.0))) + 1.2 * exp((cm - 1.0) * 60.0));   // moonlit sky + aureole
+    sunAdd += moonDisk(rd, P0);
     float c = dot(rd, uSunDir);
     float SUN_R = uSunRadius;
     float ang = acos(clamp(c, -1.0, 1.0));
@@ -1671,8 +1748,9 @@ function use(prog, vals){
       case gl.FLOAT_VEC3: gl.uniform3fv(u.loc, v); break;
       case gl.FLOAT_VEC4: gl.uniform4fv(u.loc, v); break;
       case gl.FLOAT_MAT4: gl.uniformMatrix4fv(u.loc, false, v); break;
+      case gl.FLOAT_MAT3: gl.uniformMatrix3fv(u.loc, false, v); break;
       case gl.INT: case gl.BOOL: gl.uniform1i(u.loc, v); break;
-      case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW:
+      case gl.SAMPLER_2D: case gl.SAMPLER_2D_SHADOW: case gl.UNSIGNED_INT_SAMPLER_2D:
         gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, v); gl.uniform1i(u.loc, unit++); break;
       case gl.SAMPLER_2D_ARRAY_SHADOW:
         gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D_ARRAY, v); gl.uniform1i(u.loc, unit++); break;
@@ -2124,6 +2202,8 @@ function render(now){
   const treesInShadow = P.trees && P.treeshadow > 0 && P.forest > 0;
 
   const hazeQ = Math.round(P.haze * 20) / 20;   // quantised: the atmosphere LUTs are rebuilt when it changes
+  // ---- real night sky (stars, planets, Moon) ----
+  Object.assign(G, Sky.update(L, 2 * Math.tan(fov / 2) / S.H));
   // ---- globals ----
   Object.assign(G, {
     uSunDir: L, uSunIllum: [10, 9.8, 9.4], uHaze: hazeQ,
@@ -2221,7 +2301,7 @@ function render(now){
   fullscreen(PR.vol, R.cur.fb, S.low[0], S.low[1], {
     uSceneDepth: R.tDepth, uLowSize: S.low, uFullSize: [S.W, S.H], uFrame: frame,
     // at night the sky-light floor x auto-exposure makes clouds glow; fade their ambient so they read as dark shapes
-    uShafts: P.shafts, uCloudFar: 180, uAmbient: P.ambient * (0.25 + 0.75 * smooth(-0.21, 0.0, L[1])), uSharp: P.sharp, uCrease: P.crease,
+    uShafts: P.shafts, uCloudFar: 180, uAmbient: P.ambient * (0.25 + 0.75 * smooth(-0.21, 0.0, L[1]) + 0.55 * Sky.moonLight() * (1 - smooth(-0.21, 0.0, L[1]))), uSharp: P.sharp, uCrease: P.crease,
     uCloudSteps: q.cloud, uLightSteps: q.light, uAtmoSteps: q.atmo,
   });
 
@@ -2267,7 +2347,7 @@ function render(now){
   });
 
   gpuTimerEnd(gpuQ);
-  Bg.frame(L, Weather.overcast());
+  Bg.frame(L, Weather.overcast(), Sky.moonLight());
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
     fpsShown = 1000 / avg; statsT = now;
@@ -2855,14 +2935,14 @@ const Bg = (() => {
   }
   const horizon = () => clamp(P.horizonAuto && B.autoH !== null && effective() !== 'horizon' ? B.autoH + 0.01 : P.horizon, 0.05, 0.98);
   // tint the photo to match the rendered light: dim + blue at night, warm at sunrise/sunset, flatter when overcast
-  function frame(L, overcast){
+  function frame(L, overcast, moon = 0){
     if (!active()) return;
     const now = performance.now();
     if (now - B.relightT < 400) return;
     B.relightT = now;
     const el = Math.asin(clamp(L[1], -1, 1)) / DEG;
     const day = smooth(-9, 5, el), low = (1 - smooth(1, 18, el)) * day, oc = clamp(overcast, 0, 1);
-    const lum = (0.04 + 0.96 * day) * (1 - 0.45 * oc * day);
+    const lum = (0.04 + 0.1 * moon * (1 - oc) * (1 - day) + 0.96 * day) * (1 - 0.45 * oc * day);
     let r = lum * (1 + 0.04 * low), g = lum * (1 - 0.16 * low), b = lum * (1 - 0.36 * low);
     r *= 1 - 0.35 * (1 - day); g *= 1 - 0.2 * (1 - day);          // moonlit blue
     b *= 1 + 0.06 * oc * day;                                        // overcast: slightly cool
@@ -2970,6 +3050,119 @@ const Fx = (() => {
     }
   }
   return F;
+})();
+
+// ---- real night sky: stars, planets and Moon for the location and time ---------------------------------
+const Sky = (() => {
+  const N = STAR_N, R_INS = Math.tan(1.0 * DEG);       // bins are ~1.4-2.8 deg; each entry is filed in every bin within 1 deg
+  const K = {stars: null, builtAt: -1e15, key: '', bodies: null, bodiesAt: -1e15, moonLight: 0, active: false};
+  const T = {data: null, bins: null, idx: null};
+  const IDENT3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  // empty textures so the shader always has valid bindings
+  function mk(internal, format, type, w, h, arr){
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, arr);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    return t;
+  }
+  T.data = mk(gl.RGBA32F, gl.RGBA, gl.FLOAT, 1, 1, new Float32Array(4));
+  T.bins = mk(gl.RG32UI, gl.RG_INTEGER, gl.UNSIGNED_INT, 1, 1, new Uint32Array(2));
+  T.idx = mk(gl.R32UI, gl.RED_INTEGER, gl.UNSIGNED_INT, 1, 1, new Uint32Array(1));
+  // star colour from temperature (Tanner Helland's blackbody fit), linear, luminance 1, gently desaturated
+  function tempRGB(k){
+    const t = clamp(k, 1500, 40000) / 100;
+    let r = t <= 66 ? 255 : 329.698727446 * Math.pow(t - 60, -0.1332047592);
+    let g = t <= 66 ? 99.4708025861 * Math.log(t) - 161.1195681661 : 288.1221695283 * Math.pow(t - 60, -0.0755148492);
+    let b = t >= 66 ? 255 : t <= 19 ? 0 : 138.5177312231 * Math.log(t - 10) - 305.0447927307;
+    let c = [r, g, b].map(v => Math.pow(clamp(v, 0, 255) / 255, 2.2));
+    const l = c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
+    return c.map(v => 0.45 + 0.55 * v / l);
+  }
+  const PLANET_RGB = {mercury: [1, 0.95, 0.88], venus: [1, 0.98, 0.92], mars: [1.25, 0.72, 0.5], jupiter: [1.08, 1.0, 0.86], saturn: [1.1, 0.98, 0.76]};
+  function bin(x, y, z){
+    const ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+    let f, u, v;
+    if (ax >= ay && ax >= az){ f = x > 0 ? 0 : 1; u = y / ax; v = z / ax; }
+    else if (ay >= az){ f = y > 0 ? 2 : 3; u = x / ay; v = z / ay; }
+    else { f = z > 0 ? 4 : 5; u = x / az; v = y / az; }
+    const i = clamp(Math.floor((u * 0.5 + 0.5) * N), 0, N - 1), j = clamp(Math.floor((v * 0.5 + 0.5) * N), 0, N - 1);
+    return j * 6 * N + f * N + i;            // texel index in the (6N x N) bin texture
+  }
+  // entries: {d: J2000 unit vector, m: magnitude, c: [r,g,b], s: PSF scale}
+  function build(entries){
+    const n = entries.length, lists = new Array(n), cnt = new Uint32Array(6 * N * N);
+    for (let k = 0; k < n; k++){
+      const [x, y, z] = entries[k].d, set = new Set([bin(x, y, z)]);
+      const t1 = Math.abs(z) < 0.9 ? v3.norm(v3.cross([0, 0, 1], [x, y, z])) : v3.norm(v3.cross([1, 0, 0], [x, y, z])), t2 = v3.cross([x, y, z], t1);
+      for (let a = 0; a < 8; a++){
+        const ca = Math.cos(a * Math.PI / 4) * R_INS, sa = Math.sin(a * Math.PI / 4) * R_INS;
+        set.add(bin(x + ca * t1[0] + sa * t2[0], y + ca * t1[1] + sa * t2[1], z + ca * t1[2] + sa * t2[2]));
+      }
+      lists[k] = set; for (const b of set) cnt[b]++;
+    }
+    const start = new Uint32Array(cnt.length); let tot = 0;
+    for (let b = 0; b < cnt.length; b++){ start[b] = tot; tot += cnt[b]; }
+    const fill = start.slice(), idx = new Uint32Array(Math.ceil(Math.max(tot, 1) / 4096) * 4096);
+    for (let k = 0; k < n; k++) for (const b of lists[k]) idx[fill[b]++] = k;
+    const binArr = new Uint32Array(cnt.length * 2);
+    for (let b = 0; b < cnt.length; b++){ binArr[b * 2] = start[b]; binArr[b * 2 + 1] = cnt[b]; }
+    const rows = Math.ceil(n * 2 / 4096), data = new Float32Array(rows * 4096 * 4);
+    for (let k = 0; k < n; k++){
+      const e = entries[k];
+      data.set([e.d[0], e.d[1], e.d[2], e.m, e.c[0], e.c[1], e.c[2], e.s], k * 8);
+    }
+    gl.bindTexture(gl.TEXTURE_2D, T.data); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 4096, rows, 0, gl.RGBA, gl.FLOAT, data);
+    gl.bindTexture(gl.TEXTURE_2D, T.bins); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32UI, 6 * N, N, 0, gl.RG_INTEGER, gl.UNSIGNED_INT, binArr);
+    gl.bindTexture(gl.TEXTURE_2D, T.idx); gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32UI, 4096, idx.length / 4096, 0, gl.RED_INTEGER, gl.UNSIGNED_INT, idx);
+    let mx = 0; for (const c of cnt) mx = Math.max(mx, c);
+    K.maxPerBin = mx;
+  }
+  const psf = m => clamp(0.6 + 0.2 * (2.5 - m), 0.6, 1.7);   // brighter -> slightly larger point
+  function entries(b){
+    if (!K.stars) K.stars = Ephem.unpackStars(STAR_DATA);
+    const S = K.stars, out = [];
+    for (let k = 0; k < S.n; k++) out.push({d: [S.dir[k * 3], S.dir[k * 3 + 1], S.dir[k * 3 + 2]], m: S.mag[k], c: tempRGB(S.K[k]), s: psf(S.mag[k])});
+    if (P.planets) for (const p of b.planets) out.push({d: Ephem.dateToJ2000(p.eq, b.d), m: p.mag, c: PLANET_RGB[p.name], s: psf(p.mag)});
+    return out;
+  }
+  const LIMIT = {'City': 3.5, 'Suburban': 4.5, 'Rural': 5.5, 'Dark site': 6.5};
+  // per frame: returns the shader uniforms (stars/Moon off -> procedural stars, no Moon)
+  function update(L, pixAng){
+    const loc = Weather.state.loc, off = {uMoonAmb: [0, 0, 0], uStarParams: [0, 0, pixAng, 0], uMoonParams: [0, 0, 0, 0], uMoonDir: [0, 1, 0], uMoonUp: [1, 0, 0],
+      uMoonGlow: [0, 0, 0], uJ2000FromWorld: IDENT3, uStarBins: T.bins, uStarIdx: T.idx, uStarData: T.data};
+    K.active = !!(P.realSky && Weather.sun() && loc);
+    if (!K.active){ K.moonLight = 0; return off; }
+    const now = new Date(), tms = now.getTime();
+    if (tms - K.bodiesAt > 60e3 || Math.abs(tms - K.bodiesAt) > 3600e3){ K.bodies = Ephem.bodies(now); K.bodiesAt = tms; }
+    const b = K.bodies;
+    const key = String(P.planets);
+    if (tms - K.builtAt > 10 * 60e3 || tms < K.builtAt || key !== K.key){ build(entries(b)); K.builtAt = tms; K.key = key; }
+    // equatorial (of date) -> world: local East/North/Up, then the same compass mapping as the sun
+    const lst = Ephem.gmst(now) + loc.lon, B = Ephem.enuBasis(loc.lat, lst);
+    const cc = HOME_YAW + P.viewBearing * DEG, sc = Math.sin(cc), co = Math.cos(cc);
+    const toWorld = v => { const e = v3.dot(v, B.E), n = v3.dot(v, B.N), u = v3.dot(v, B.U); return [sc * n - co * e, u, co * n + sc * e]; };
+    // J2000 -> world as a matrix (columns = images of the J2000 axes); the shader needs its transpose
+    const cols = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(a => toWorld(Ephem.j2000ToDate(a, b.d)));
+    const J2W = [cols[0], cols[1], cols[2]];
+    const W2J = [J2W[0][0], J2W[1][0], J2W[2][0], J2W[0][1], J2W[1][1], J2W[2][1], J2W[0][2], J2W[1][2], J2W[2][2]];   // column-major of the transpose
+    // Moon: topocentric (parallax lowers it by up to ~1 deg)
+    let md = toWorld(b.moon.eq);
+    const alt = Math.asin(clamp(md[1], -1, 1)), par = Math.asin(1 / b.moon.dist);
+    const alt2 = alt - par * Math.cos(alt), hz = Math.hypot(md[0], md[2]) || 1;
+    md = [md[0] / hz * Math.cos(alt2), Math.sin(alt2), md[2] / hz * Math.cos(alt2)];
+    const ncp = toWorld([0, 0, 1]);                                     // celestial north, for the Moon's orientation
+    let up = v3.sub(ncp, v3.scale(md, v3.dot(ncp, md))); up = v3.dot(up, up) > 1e-8 ? v3.norm(up) : [0, 1, 0];
+    const radius = Math.asin(1737.4 / (b.moon.dist * 6378.14)) * P.moonScale;
+    const day = smooth(-0.21, 0.0, L[1]);
+    K.moonLight = Math.pow(b.moon.illum, 1.5) * smooth(-1 * DEG, 12 * DEG, alt2);
+    const glow = 0.0022 * K.moonLight * (1 - day);
+    // a moonlit sky hides faint stars
+    const limit = LIMIT[P.skyDark] - 1.6 * K.moonLight;
+    const ma = 0.006 * K.moonLight * (1 - day) * (1 - 0.7 * Weather.overcast());   // clouds dim it
+    return {uMoonAmb: [0.75 * ma, 0.85 * ma, 1.0 * ma], uStarParams: [0.02 * P.starBright, limit, pixAng, 1], uJ2000FromWorld: W2J, uStarBins: T.bins, uStarIdx: T.idx, uStarData: T.data,
+      uMoonDir: md, uMoonUp: up, uMoonParams: [radius, 1.56e-6 * (0.18 + 0.82 * day), 0.004, 1], uMoonGlow: [0.55 * glow, 0.68 * glow, 1.0 * glow]};
+  }
+  return {update, moonLight: () => K.moonLight, active: () => K.active, state: K, rebuild: () => { K.key = ''; }};
 })();
 
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------
