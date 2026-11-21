@@ -355,6 +355,27 @@
     "step": 0.05,
     "text": "Night dimming: darken the whole wallpaper after dusk, for dark rooms (0 = off)"
   },
+  "windowFrame": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Window frame",
+    "items": [
+      "None",
+      "Single pane",
+      "Two panes",
+      "Four panes"
+    ]
+  },
+  "frameColour": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Frame colour",
+    "items": [
+      "White",
+      "Wood",
+      "Black"
+    ]
+  },
   "sound": {
     "type": "checkbox",
     "value": false,

@@ -15,7 +15,7 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 #fgfog,#fgcars{filter:url(#relight)}
 #fg,#fgsway{filter:url(#relight)}
 #flash{position:fixed;inset:0;background:#dfe8ff;opacity:0;pointer-events:none;mix-blend-mode:screen}
-#wx{position:fixed;right:18px;top:14px;color:rgba(255,255,255,.82);font-size:13px;text-align:right;pointer-events:none;
+#wx{position:fixed;z-index:6;right:18px;top:14px;color:rgba(255,255,255,.82);font-size:13px;text-align:right;pointer-events:none;
   text-shadow:0 1px 3px rgba(0,0,0,.65);line-height:1.45;font-variant-numeric:tabular-nums}
 #wx .big{font-size:20px;font-weight:600}
 #wx .dim{opacity:.65;font-size:11px}
@@ -121,6 +121,7 @@ const SCHEMA = [
   {id:'imgFov',   label:'Sky FOV',     min:20,   max:100, step:1,    v:55,   fmt:v=>Math.round(v)+'°'},
   {id:'relight',  label:'Relight image', min:0,  max:1,   step:0.01, v:0.85, fmt:f2},
   {id:'bgExport', label:'Save cut-out PNG', type:'button', on:()=>Bg.exportCutout()},
+  {id:'painter',  label:'Paint masks…', type:'button', on:()=>Painter.open()},
   {id:'birds',    label:'Birds', type:'check', v:true},
   {id:'birdAmt',  label:'Bird activity', min:0, max:3, step:0.05, v:1, fmt:f2},
   {id:'traffic',  label:'Traffic (cars per hour ×)', min:0, max:4, step:0.05, v:1, fmt:v=>v ? v.toFixed(2)+'×' : 'off', on:()=>Bg.rebuildRoads()},
@@ -151,6 +152,8 @@ const SCHEMA = [
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
+  {id:'windowFrame', label:'Window frame', type:'select', options:['None','Single pane','Two panes','Four panes'], v:'None', on:NOP},
+  {id:'frameColour', label:'Frame colour', type:'select', options:['White','Wood','Black'], v:'White', on:NOP},
   {id:'nightDim', label:'Night dimming', min:0, max:0.85, step:0.05, v:0.25, fmt:v=>v ? Math.round(v*100)+'% darker' : 'off'},
   {id:'preset',   label:'Preset', type:'select', options:['Custom','Realistic','Calm','Light on the GPU'], v:'Custom', on:()=>applyPreset(P.preset)},
   {id:'adaptiveFps', label:'Adaptive frame rate (10 fps when nothing moves)', type:'check', v:true},
@@ -307,7 +310,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','adaptiveFps','nightDim','birds','birdAmt','traffic','roadsMask','viewHeight']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','adaptiveFps','nightDim','windowFrame','frameColour','birds','birdAmt','traffic','roadsMask','viewHeight']);
 let saveTimer = 0, booted = false, hostBurst = true;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -318,7 +321,7 @@ function settingChanged(id){
   if (PERSIST.has(id) && !(hostSeen && hostBurst)){              // don't let the host's start-up values overwrite what we saved
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      const o = {}; for (const k of PERSIST) o[k] = P[k];
+      const o = {}; for (const k of PERSIST) if (!(typeof P[k] === 'string' && P[k].startsWith('data:'))) o[k] = P[k];
       try { localStorage.setItem('wcs.settings', JSON.stringify(o)); } catch (e) {}
     }, 400);
   }
@@ -2525,6 +2528,7 @@ function render(now){
   Parallax.step(dt);
   Sound.frame(dt);
   Status.update(L);
+  Frame.draw(L);
   { const el = Math.asin(clamp(L[1], -1, 1)) / DEG, d = P.nightDim * smooth(-2, -10, el); const nd = document.getElementById('nightdim'); const v = d.toFixed(3); if (nd.style.opacity !== v) nd.style.opacity = v; }   // dim at night for dark rooms
   // is anything moving that needs a high frame rate? (clouds drift too slowly to need it)
   {
@@ -4925,7 +4929,7 @@ function applyPreset(name){
 
 // ---- settings export / import (a block of text you can keep and paste back) ----------------------------------
 function exportSettings(){
-  const o = {v: VERSION}; for (const k of PERSIST) o[k] = P[k];
+  const o = {v: VERSION}; for (const k of PERSIST) if (!(typeof P[k] === 'string' && P[k].startsWith('data:'))) o[k] = P[k];
   const txt = 'WCS1:' + btoa(unescape(encodeURIComponent(JSON.stringify(o))));
   const done = () => alert('Settings copied to the clipboard. Keep the text somewhere safe; paste it into "Import settings" to restore.');
   if (navigator.clipboard && window.isSecureContext !== false) navigator.clipboard.writeText(txt).then(done, () => prompt('Copy your settings:', txt));
@@ -4991,6 +4995,126 @@ const Status = (() => {
     box.innerHTML = out.join('');
   }
   return {update};
+})();
+
+// ---- mask painter: paint the motion, lights and roads masks directly over your image --------------------------
+const Painter = (() => {
+  const LAYERS = {
+    motion: {label: 'Motion (white = sways)', setting: 'swayMask', colour: '#fff', erase: '#000', tint: 'rgba(255,255,255,0.45)', suffix: 'motion-mask'},
+    lights: {label: 'Lights (dot = a light)', setting: 'lightsMask', colour: '#fff', erase: '#000', tint: 'rgba(255,220,120,0.8)', suffix: 'lights'},
+    roads:  {label: 'Roads (red = visible)', setting: 'roadsMask', colour: '#f00', erase: '#000', tint: null, suffix: 'roads'},
+    hidden: {label: 'Roads hidden (blue)', setting: 'roadsMask', colour: '#00f', erase: '#000', tint: null, suffix: 'roads'},
+  };
+  let ui = null, layer = 'motion', size = 14, erasing = false, masks = {}, img = null, view = null, painting = false, last = null;
+  function blank(fill = '#000'){ const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight; const x = c.getContext('2d'); x.fillStyle = fill; x.fillRect(0, 0, c.width, c.height); return c; }
+  function seed(){
+    masks.motion = blank(); masks.lights = blank(); masks.roads = blank();
+    const SW = Bg.swayState, LT = Bg.lightState;
+    try { if (SW.mask) masks.motion.getContext('2d').drawImage(SW.mask, 0, 0, img.naturalWidth, img.naturalHeight); masks.motion.getContext('2d').getImageData(0, 0, 1, 1); }
+    catch (e){ masks.motion = blank(); }                              // a mask from a locked file: start empty
+    const lx = masks.lights.getContext('2d'); lx.fillStyle = '#fff';
+    for (const s of LT.spots){ lx.beginPath(); lx.arc(s.x * img.naturalWidth, s.y * img.naturalHeight, Math.max(2, s.r * img.naturalWidth), 0, 6.283); lx.fill(); }
+    if (Bg.trafficState.custom){ try { masks.roads.getContext('2d').drawImage(Bg.trafficState.custom, 0, 0, img.naturalWidth, img.naturalHeight); masks.roads.getContext('2d').getImageData(0, 0, 1, 1); } catch (e){ masks.roads = blank(); } }
+  }
+  function open(){
+    if (!Bg.active()){ alert('Set Background to Image and load your picture first.'); return; }
+    img = Bg.state.img; seed();
+    ui = document.createElement('div');
+    ui.style.cssText = 'position:fixed;inset:0;z-index:30;background:#111;display:flex;flex-direction:column;font:13px system-ui,sans-serif;color:#dde3ea';
+    ui.innerHTML = `<div style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:#1b2130;flex-wrap:wrap">
+      <b>Mask painter</b>
+      ${Object.entries(LAYERS).map(([k, l]) => `<label style="cursor:pointer"><input type="radio" name="pl" value="${k}" ${k === layer ? 'checked' : ''}> ${l.label}</label>`).join('')}
+      <span style="margin-left:8px">Brush <input id="pb" type="range" min="2" max="120" value="${size}"></span>
+      <label><input id="pe" type="checkbox"> Erase</label>
+      <button class="btn" id="pu">Use now</button><button class="btn" id="ps">Save PNG</button><button class="btn" id="pc">Clear layer</button><button class="btn" id="px">Close</button>
+      <span id="pn" style="color:#9fb0c2;flex-basis:100%">Paint over your picture. Motion: white where things may sway. Lights: a dot per window or lamp. Roads: red where the road is visible, blue where it passes behind something, about as wide as the road. "Use now" applies it here; "Save PNG" downloads it so you can add it in Lively (Image + button) and type its name in the matching mask setting.</span>
+    </div><canvas id="pv" style="flex:1;min-height:0;width:100%;cursor:crosshair;touch-action:none"></canvas>`;
+    document.body.appendChild(ui);
+    ui.querySelectorAll('.btn').forEach(b => b.style.cssText = 'background:rgba(255,179,107,.2);color:#ffd2a6;border:1px solid rgba(255,179,107,.5);border-radius:4px;padding:3px 10px;cursor:pointer');
+    view = ui.querySelector('#pv');
+    ui.querySelectorAll('input[name=pl]').forEach(r => r.onchange = () => { layer = r.value; draw(); });
+    ui.querySelector('#pb').oninput = e => size = +e.target.value;
+    ui.querySelector('#pe').onchange = e => erasing = e.target.checked;
+    ui.querySelector('#pc').onclick = () => { const m = maskFor(layer); m.getContext('2d').fillStyle = '#000'; m.getContext('2d').fillRect(0, 0, m.width, m.height); draw(); };
+    ui.querySelector('#px').onclick = close;
+    ui.querySelector('#pu').onclick = () => useNow(layer);
+    ui.querySelector('#ps').onclick = () => save(layer);
+    view.addEventListener('pointerdown', e => { painting = true; last = toImg(e); stroke(last, last); view.setPointerCapture(e.pointerId); });
+    view.addEventListener('pointermove', e => { if (!painting) return; const p = toImg(e); stroke(last, p); last = p; });
+    view.addEventListener('pointerup', () => { painting = false; });
+    addEventListener('keydown', key);
+    addEventListener('resize', draw);
+    draw();
+  }
+  const maskFor = k => masks[k === 'hidden' ? 'roads' : k];
+  function key(e){ if (!ui) return; if (e.key === 'Escape') close(); if (e.key === '[') size = Math.max(2, size - 4); if (e.key === ']') size = Math.min(120, size + 4); }
+  function fit(){ const W = view.clientWidth, H = view.clientHeight, s = Math.min(W / img.naturalWidth, H / img.naturalHeight); return {s, x: (W - img.naturalWidth * s) / 2, y: (H - img.naturalHeight * s) / 2, W, H}; }
+  function toImg(e){ const r = view.getBoundingClientRect(), f = fit(); return [(e.clientX - r.left - f.x) / f.s, (e.clientY - r.top - f.y) / f.s]; }
+  function stroke(a, b){
+    const l = LAYERS[layer], x = maskFor(layer).getContext('2d'), f = fit();
+    x.strokeStyle = erasing ? l.erase : l.colour; x.lineCap = 'round'; x.lineJoin = 'round'; x.lineWidth = size / f.s;
+    x.beginPath(); x.moveTo(a[0], a[1]); x.lineTo(b[0] + 0.01, b[1]); x.stroke();
+    draw();
+  }
+  function draw(){
+    if (!ui) return;
+    const f = fit(), d = view; d.width = f.W; d.height = f.H;
+    const x = d.getContext('2d');
+    x.fillStyle = '#111'; x.fillRect(0, 0, f.W, f.H);
+    x.drawImage(img, f.x, f.y, img.naturalWidth * f.s, img.naturalHeight * f.s);
+    const m = maskFor(layer), l = LAYERS[layer];
+    if (layer === 'roads' || layer === 'hidden'){ x.globalCompositeOperation = 'screen'; x.globalAlpha = 0.9; x.drawImage(m, f.x, f.y, img.naturalWidth * f.s, img.naturalHeight * f.s); }
+    else {
+      // tint where the mask is white: draw mask as alpha via an offscreen copy
+      const o = document.createElement('canvas'); o.width = Math.max(1, Math.round(img.naturalWidth * f.s)); o.height = Math.max(1, Math.round(img.naturalHeight * f.s));
+      const ox = o.getContext('2d'); ox.fillStyle = l.tint; ox.fillRect(0, 0, o.width, o.height);
+      ox.globalCompositeOperation = 'destination-in'; ox.filter = 'grayscale(1)';
+      const a = document.createElement('canvas'); a.width = o.width; a.height = o.height; const ax = a.getContext('2d'); ax.drawImage(m, 0, 0, o.width, o.height);
+      const id = ax.getImageData(0, 0, a.width, a.height); for (let i = 0; i < id.data.length; i += 4){ id.data[i + 3] = id.data[i]; } ax.putImageData(id, 0, 0);
+      ox.filter = 'none'; ox.drawImage(a, 0, 0);
+      x.drawImage(o, f.x, f.y);
+    }
+    x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
+  }
+  function name(k){ return (Bg.state.name.replace(/\.[^.]+$/, '') || 'image') + '-' + LAYERS[k].suffix + '.png'; }
+  function useNow(k){ setParam(LAYERS[k].setting, maskFor(k).toDataURL('image/png')); ui.querySelector('#pn').textContent = `Applied. It lasts until you reload; use "Save PNG" to keep it.`; }
+  function save(k){
+    maskFor(k).toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name(k); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      ui.querySelector('#pn').textContent = `Saved ${name(k)}. Add it in Lively with the Image + button, then type "${name(k)}" in the ${LAYERS[k].setting === 'swayMask' ? 'Motion mask' : LAYERS[k].setting === 'lightsMask' ? 'Lights mask' : 'Roads mask'} setting.`; }, 'image/png');
+  }
+  function close(){ if (ui){ ui.remove(); ui = null; removeEventListener('keydown', key); removeEventListener('resize', draw); } }
+  return {open};
+})();
+
+// ---- window frame: an optional frame and glazing bars on the glass plane (fixed while the view moves behind it) ----
+const Frame = (() => {
+  const cv = document.createElement('canvas'); cv.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:4;display:none';
+  document.body.insertBefore(cv, document.getElementById('nightdim'));
+  let key = '';
+  const COL = {'White': [236, 234, 228], 'Wood': [122, 84, 52], 'Black': [38, 38, 40]};
+  function bar(x, X, Y, W, H, c, horiz){
+    const g = horiz ? x.createLinearGradient(0, Y, 0, Y + H) : x.createLinearGradient(X, 0, X + W, 0);
+    const s = k => `rgb(${(c[0] * k) | 0},${(c[1] * k) | 0},${(c[2] * k) | 0})`;
+    g.addColorStop(0, s(1.05)); g.addColorStop(0.45, s(0.95)); g.addColorStop(1, s(0.72));
+    x.fillStyle = g; x.fillRect(X, Y, W, H);
+  }
+  function draw(L){
+    const mode = P.windowFrame;
+    if (mode === 'None'){ if (cv.style.display !== 'none') cv.style.display = 'none'; return; }
+    // indoor frame: lit by the room, a little by daylight; darker at night
+    const el = Math.asin(clamp(L[1], -1, 1)) / DEG, light = 0.35 + 0.65 * smooth(-6, 10, el);
+    const W = innerWidth, H = innerHeight, k = `${mode}|${P.frameColour}|${W}x${H}|${light.toFixed(2)}|${Bg.active() ? Bg.horizon().toFixed(3) : ''}`;
+    if (k === key) return; key = k;
+    cv.style.display = ''; const dpr = Math.min(devicePixelRatio || 1, 2); cv.width = W * dpr; cv.height = H * dpr;
+    const x = cv.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, W, H);
+    const c = COL[P.frameColour].map(v => v * light), t = Math.round(H * 0.035), sill = Math.round(H * 0.06), m = Math.round(H * 0.012);
+    // inner shadow onto the view, then the frame members
+    x.fillStyle = 'rgba(0,0,0,0.18)'; x.fillRect(t, t, W - 2 * t, m * 1.5); x.fillRect(t, t, m * 1.2, H - t - sill);
+    bar(x, 0, 0, W, t, c, true); bar(x, 0, 0, t, H, c, false); bar(x, W - t, 0, t, H, c, false); bar(x, 0, H - sill, W, sill, c, true);
+    if (mode === 'Two panes' || mode === 'Four panes') bar(x, W / 2 - m / 2, 0, m, H, c, false);
+    if (mode === 'Four panes') bar(x, 0, Bg.active() ? Bg.horizon() * H - H * 0.14 - m / 2 : (H - sill) * 0.42, W, m, c, true);   // keep the horizon clear
+  }
+  return {draw};
 })();
 
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------
