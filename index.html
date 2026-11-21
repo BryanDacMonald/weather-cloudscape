@@ -3207,9 +3207,12 @@ void main(){
     for (let i = 0; i < N; i++) m[i] = Math.min(1, m[i] * 1.6);
     return maskCanvas(smoothMask(m, w, h), w, h);
   }
-  // box-blur twice (edges clamped) so the displacement field has no tears where moving meets still
+  // soften without letting still things move: first grow the still (dark) areas by the blur radius (min filter),
+  // then box-blur twice, so a fence or path stays fully still and the fade happens on the vegetation side
   function smoothMask(m, w, h){
-    const rad = Math.max(1, Math.round(w * 0.006)), t = new Float32Array(w * h), n = 2 * rad + 1;
+    const rad = Math.max(1, Math.round(w * 0.005)), t = new Float32Array(w * h), n = 2 * rad + 1;
+    for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++){ let v = 1; for (let k = -rad; k <= rad; k++) v = Math.min(v, m[y * w + clamp(xx + k, 0, w - 1)]); t[y * w + xx] = v; }
+    for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++){ let v = 1; for (let k = -rad; k <= rad; k++) v = Math.min(v, t[clamp(y + k, 0, h - 1) * w + xx]); m[y * w + xx] = v; }
     for (let pass = 0; pass < 2; pass++){
       for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++){ let v = 0; for (let k = -rad; k <= rad; k++) v += m[y * w + clamp(xx + k, 0, w - 1)]; t[y * w + xx] = v / n; }
       for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++){ let v = 0; for (let k = -rad; k <= rad; k++) v += t[clamp(y + k, 0, h - 1) * w + xx]; m[y * w + xx] = v / n; }
