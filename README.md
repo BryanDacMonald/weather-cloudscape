@@ -2,16 +2,30 @@
 
 Real-time volumetric clouds that follow **your actual local weather**: cloud cover, cloud type, cloud base height, wind direction and speed, haze/fog, rain, snow and lightning. The sun, Moon, planets and stars sit where they really are in your sky right now. You can keep the procedural mountain valley, or use **your own background image** and the rendered sky shows through behind it.
 
+Think of it as a **virtual window**: raindrops run down the glass, frost creeps in from the edges, trees sway in the real wind, lights come on in the houses at dusk, birds and aircraft cross the sky, and the northern lights appear when they really could.
+
+![Day, sunset, a rainy afternoon and a moonlit night](docs/montage.jpg)
+
 It is a fork of [Cloudscape](https://github.com/Fishypants/cloudscape) by Michael Cook (MIT). The renderer is a single HTML file with no dependencies. Weather comes from [Open-Meteo](https://open-meteo.com/), which needs no API key.
 
-## Install (Lively Wallpaper, free)
+## Quick start
 
-1. Install **Lively Wallpaper** from the Microsoft Store or [rocksdanister/lively](https://github.com/rocksdanister/lively).
-2. Zip this folder, or keep it as a folder.
-3. In Lively, click **+ Add Wallpaper** and choose the zip, or drag the zip or `index.html` onto the Lively window.
-4. Select **Weather Cloudscape**, then click **Customise** (the "…" menu or the settings icon) to set it up.
+1. Install **Lively Wallpaper** (free) from the Microsoft Store or [rocksdanister/lively](https://github.com/rocksdanister/lively).
+2. Download the zip from the [latest release](https://github.com/BryanDacMonald/weather-cloudscape/releases/latest).
+3. In Lively, click **+ Add Wallpaper** and choose the zip. Select **Weather Cloudscape**, then click **Customise**.
+4. Pick a **Preset** (Realistic is a good start) and type your exact location in **Location**, e.g. `44.9778, -93.2650` (right-click your home in Google Maps to copy it).
+5. Optional: set **Background** to **Image** and add your own picture with the **+** button.
 
-On first start the wallpaper finds your approximate location from your IP address and fetches the weather. IP location can be off by tens of kilometres, and a VPN moves it entirely. **Type your city** (e.g. `Halifax, Canada`) or `lat, lon` in **Location** to get it right. The weather readout in the top-right corner shows which place it is using.
+Turn on **Status panel** at any time to see whether each feature is working and what it is doing.
+
+### Updating to a new version
+
+When a new version is out, the weather readout says so (it checks GitHub once a day). Two ways to update:
+
+- **In place (keeps everything):** in Lively's Library, right-click the wallpaper → **Open file location**, and replace `index.html` and `LivelyProperties.json` with the new ones. Your images and masks stay in the `images` folder.
+- **Fresh install:** add the new zip. With **Keep my settings when reinstalling** on (the default), your previous settings come back automatically, even though Lively's panel shows its defaults at first. Re-add your images with the **+** button. **Export settings** / **Import settings** (browser panel, press H) give you a copy to keep.
+
+If no location is set, the wallpaper finds your approximate location from your IP address, which can be off by tens of kilometres (and a VPN moves it entirely).
 
 ### Lively settings that matter
 
@@ -22,7 +36,9 @@ On first start the wallpaper finds your approximate location from your IP addres
 | Cloud motion | Time-lapse factor for drifting clouds. 1 = true wind speed, which is almost imperceptibly slow. |
 | Background / Image | `Procedural landscape`, or `Image` plus a file from the dropdown. |
 | Sky mask | How the sky region of your image is found (see below). |
-| Quality / Frame cap | GPU cost. Start with **Medium / 30**. Drop to **Low / 15** on laptops. |
+| Quality / Frame cap / GPU budget | GPU cost. **Medium / 30** with a 15% budget is a good balance. The budget caps how much of the graphics card the clouds may use; **Adaptive frame rate** drops to 10 fps whenever nothing is moving. |
+| Night dimming | Darkens the whole wallpaper after dusk, for dark rooms. |
+| Window frame | Optional frame and glazing bars, fixed on the glass while the view moves behind it. |
 
 ## Using your own background image
 
@@ -35,7 +51,7 @@ How the sky gets replaced, from best to worst:
    - **Catch:** browsers block reading pixels from local files when a page runs from disk. In Lively, auto-detection may be unavailable. If so, the wallpaper falls back to the horizon line and says so in the in-page panel. The workaround: open `index.html` in Chrome or Edge, press **H**, click **Choose image…**, check the result, then click **Save cut-out PNG** and use that PNG in Lively.
 3. **Horizon line**. Everything above a straight line becomes sky. Good for sea or flat-horizon photos.
 
-**Wind sway.** Trees and grass in your image move with the live wind: gusts roll across the scene in the real wind direction (relative to **View faces**), nearer vegetation moves more, and leaves flutter. Strength follows the measured wind and gusts; **Wind sway** scales it (0 = off). Which parts may move comes from a *motion mask*, made automatically from vegetation colour and texture. To control it, click **Save motion mask** (browser panel), paint it in any editor (white = sways, black = stays still, grey = a little), save it in the `images` folder and enter its file name in **Motion mask**. Hard edges are smoothed automatically.
+**Wind sway.** Trees and grass in your image move with the live wind: gusts roll across the scene in the real wind direction (relative to **View faces**), nearer vegetation moves more, and leaves flutter. Strength follows the measured wind and gusts; **Wind sway** scales it (0 = off). Which parts may move comes from a *motion mask*, made automatically from vegetation colour and texture. To control it, use **Paint masks…** (see below), or paint it in any editor (white = sways, black = stays still, grey = a little), save it in the `images` folder and enter its file name in **Motion mask**. Hard edges are smoothed automatically.
 
 **Night lights.** At dusk, lights come on in the scene: windows switch on one by one at slightly different times, many go off late at night, and porch and street lamps stay on until dawn. Without a mask, lights are placed automatically on houses it can detect (light, colourless walls with straight edges). That's deliberately cautious, so it can miss houses half-hidden by trees. For full control, paint a **lights mask**: a black image the size of your picture with a white dot or patch wherever a light should be (each separate white spot is one light). Save it in `images` and enter its name in **Lights mask**.
 
@@ -44,6 +60,8 @@ How the sky gets replaced, from best to worst:
 **Traffic.** Cars drive along roads you trace in a **roads mask**: a black image the size of your picture, with a red line painted along each road where you can see it and blue where it passes behind trees or houses. Cars come at realistic times (rush hours busy, 3 am nearly empty) in typical car colours, scaled by perspective. At night they become headlights and tail lights with a pool of light on the road. Set **Viewpoint height** (the camera's height above the road, in metres) so they match real cars in your image: raise it if they look too big. With sound on, you hear them pass.
 
 **Lightning** briefly lights up the whole landscape with a cold flash, as well as the sky.
+
+**Paint masks…** (in the browser panel: open `index.html` in Chrome or Edge, press **H**, load your image) opens a painter over your picture for the motion, lights and roads masks. **Use now** applies a mask at once; **Save PNG** downloads it, ready to add in Lively and name in the matching mask setting.
 
 **Auto horizon** pitches the virtual camera so the rendered horizon lines up with the bottom of your photo's sky. **Sky FOV** should roughly match the photo's lens: about 40–60° for normal photos, wider for phone ultra-wide shots. **Relight image** dims, warms and cools the photo to match the time of day and cloud cover, so the foreground doesn't stay sunlit at night. Around sunrise and sunset it adds golden light (less under cloud), and when your view faces a low sun the foreground darkens as if backlit. Photos with soft daylight and slightly muted, late-summer colours take the evening tint best.
 
@@ -139,8 +157,8 @@ Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings 
 
 ## Performance and privacy
 
-- This is a real-time raymarcher: it uses your GPU continuously. Lively pauses wallpapers when a fullscreen app or game is focused (check Lively's *Performance* settings). A dedicated GPU is recommended. Use **Low / 15 fps** on integrated graphics or battery.
-- Network requests: Open-Meteo (weather, upper air and city lookup), adsb.lol or airplanes.live (aircraft: 2 requests a minute by default, only while the wallpaper is being drawn; roughly 1–6 MB an hour near a busy airport) and, only if Location is blank, `get.geojs.io` / `ipapi.co` for IP-based location. These services see your IP address and a location rounded to about 1 km. Typing a location stops the IP lookup; turning off **Real-time aircraft** stops the flight requests.
+- This is a real-time raymarcher: it uses your GPU continuously, within the **GPU budget** you set (default 15%), and drops to 10 fps when nothing is moving. Task Manager → Performance → GPU shows the real load (the work runs in Microsoft Edge WebView2 processes, not under Lively). Lively pauses wallpapers when a fullscreen app or game is focused (check Lively's *Performance* settings). On integrated graphics or battery use the **Light on the GPU** preset.
+- Network requests: Open-Meteo (weather, upper air and city lookup), adsb.lol or airplanes.live (aircraft: 2 requests a minute by default, only while the wallpaper is being drawn; roughly 1–6 MB an hour near a busy airport) NOAA SWPC (aurora, every 15 minutes after dark), CelesTrak (ISS orbit, every 6 hours), GitHub (update check, once a day; can be turned off) and, only if Location is blank, `get.geojs.io` / `ipapi.co` for IP-based location. These services see your IP address and a location rounded to about 1 km. Typing a location stops the IP lookup; turning off **Real-time aircraft** stops the flight requests.
 - Open-Meteo's free API is for non-commercial use (about 96 requests per day here).
 
 ## Files
@@ -154,6 +172,7 @@ Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings 
 | `tools/test-sky.js` | Checks Moon, planet and star positions against known astronomical events (`node tools/test-sky.js`) |
 | `tools/make-starcat.py` | Packs the star catalogue into `index.html` |
 | `tools/make-sample.js` | Regenerates the sample image |
+| `tools/test/run-tests.js` | Regression tests for the whole wallpaper with every online service simulated (`node tools/test/run-tests.js`, several minutes) |
 
 ## License
 
