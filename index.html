@@ -142,6 +142,8 @@ const SCHEMA = [
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
+  {id:'sound',    label:'Ambient sound (rain, wind, thunder, birds, crickets)', type:'check', v:false},
+  {id:'soundVol', label:'Volume', min:0, max:1, step:0.01, v:0.5, fmt:v=>Math.round(v*100)+'%'},
   {id:'parallax', label:'Parallax (mouse = head)', min:0, max:2, step:0.05, v:0.6, fmt:v=>v ? v.toFixed(2)+'×' : 'off'},
   {id:'fpsCap',   label:'Frame cap',   type:'select', options:['10','15','20','30','60'], v:'30', on:NOP},
   {id:'interactive', label:'Mouse look / WASD fly (off for wallpaper use)', type:'check', v:false, on:()=>canvas.classList.toggle('interactive', P.interactive)},
@@ -287,7 +289,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2485,6 +2487,7 @@ function render(now){
   if (frame % 60 === 0) Bg.groundTick();
   Glass.frame(dt);
   Parallax.step(dt);
+  Sound.frame(dt);
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
     fpsShown = 1000 / avg; statsT = now;
@@ -3678,7 +3681,7 @@ void main(){
 // ---- rain / snow / lightning overlay ------------------------------------------------------
 const Fx = (() => {
   const cv = document.getElementById('fx'), ctx = cv.getContext('2d'), flashEl = document.getElementById('flash');
-  const F = {flashEV: 0, step};
+  const F = {flashEV: 0, bolts: 0, step};
   let W = 0, H = 0, sc = 1, drops = [], flakes = [], drawn = false, nextBolt = 0, bolt = -1;
   function resize(){ sc = Math.min(devicePixelRatio || 1, 1.5); W = cv.width = Math.round(innerWidth * sc); H = cv.height = Math.round(innerHeight * sc); }
   resize(); addEventListener('resize', resize);
@@ -3719,7 +3722,7 @@ const Fx = (() => {
     }
     // lightning: a double flicker every 6-25 s during thunderstorms
     const now = performance.now();
-    if (t.thunder && bolt < 0 && now > nextBolt){ bolt = 0; nextBolt = now + 6000 + Math.random() * 19000; }
+    if (t.thunder && bolt < 0 && now > nextBolt){ bolt = 0; F.bolts++; nextBolt = now + 6000 + Math.random() * 19000; }
     if (bolt >= 0){
       bolt += dt;
       const f = bolt < 0.08 ? 1 : bolt < 0.16 ? 0.2 : bolt < 0.24 ? 0.8 : Math.max(0, 1 - (bolt - 0.24) / 0.35) * 0.6;
@@ -4445,6 +4448,128 @@ const Parallax = (() => {
     if (window.__labelBox) window.__labelBox.style.transform = t(1);
   }
   return {step, state: PX};
+})();
+
+// ---- ambient sound, synthesised live from the weather (no recordings): rain, wind, thunder, birds, crickets ----
+const Sound = (() => {
+  const SD = {ctx: null, nodes: null, bolts: 0, next: 0, bird: 0, crickets: [], why: ''};
+  // the graph is built on any (Offline)AudioContext so it can be tested without speakers
+  function build(ctx){
+    const sr = ctx.sampleRate, len = sr * 4;
+    const white = ctx.createBuffer(2, len, sr), brown = ctx.createBuffer(2, len, sr);
+    for (let c = 0; c < 2; c++){
+      const w = white.getChannelData(c), b = brown.getChannelData(c); let last = 0;
+      for (let i = 0; i < len; i++){ w[i] = Math.random() * 2 - 1; last = (last + 0.02 * w[i]) / 1.02; b[i] = last * 3.5; }
+    }
+    const loop = buf => { const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.start(); return s; };
+    const master = ctx.createGain(); master.gain.value = 0; master.connect(ctx.destination);
+    const comp = ctx.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 4; comp.connect(master);
+    // rain: hiss + low patter
+    const rainHi = ctx.createBiquadFilter(); rainHi.type = 'highpass'; rainHi.frequency.value = 500;
+    const rainLo = ctx.createBiquadFilter(); rainLo.type = 'lowpass'; rainLo.frequency.value = 7000;
+    const rainG = ctx.createGain(); rainG.gain.value = 0;
+    loop(white).connect(rainHi); rainHi.connect(rainLo); rainLo.connect(rainG); rainG.connect(comp);
+    const patLo = ctx.createBiquadFilter(); patLo.type = 'lowpass'; patLo.frequency.value = 900;
+    const patG = ctx.createGain(); patG.gain.value = 0;
+    loop(brown).connect(patLo); patLo.connect(patG); patG.connect(comp);
+    // wind: band-passed brown noise, frequency and level following gusts, plus a faint whistle
+    const windBP = ctx.createBiquadFilter(); windBP.type = 'bandpass'; windBP.frequency.value = 300; windBP.Q.value = 0.6;
+    const windG = ctx.createGain(); windG.gain.value = 0;
+    loop(brown).connect(windBP); windBP.connect(windG); windG.connect(comp);
+    const whBP = ctx.createBiquadFilter(); whBP.type = 'bandpass'; whBP.frequency.value = 900; whBP.Q.value = 12;
+    const whG = ctx.createGain(); whG.gain.value = 0;
+    loop(white).connect(whBP); whBP.connect(whG); whG.connect(comp);
+    return {ctx, master, comp, rainG, patG, windBP, windG, whBP, whG, white, brown, gust: 0};
+  }
+  // one-shot events
+  function drip(n, t){
+    const c = n.ctx, s = c.createBufferSource(); s.buffer = n.white; s.loopStart = Math.random() * 3; s.loop = true;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800 + Math.random() * 3500; bp.Q.value = 6;
+    const g = c.createGain(); g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.12 + Math.random() * 0.15, t + 0.002); g.gain.exponentialRampToValueAtTime(0.0005, t + 0.05);
+    const pan = c.createStereoPanner ? c.createStereoPanner() : null;
+    s.connect(bp); bp.connect(g);
+    if (pan){ pan.pan.value = Math.random() * 1.6 - 0.8; g.connect(pan); pan.connect(n.comp); } else g.connect(n.comp);
+    s.start(t, Math.random() * 3); s.stop(t + 0.07);
+  }
+  function thunder(n, t, near){
+    const c = n.ctx, s = c.createBufferSource(); s.buffer = n.brown; s.loop = true;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.setValueAtTime(near ? 2500 : 500, t); lp.frequency.exponentialRampToValueAtTime(140, t + 3);
+    const g = c.createGain(), dur = 5 + Math.random() * 6, peak = near ? 1.6 : 0.9;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(peak, t + (near ? 0.03 : 0.4));
+    for (let k = 1; k < 7; k++) g.gain.linearRampToValueAtTime(peak * (0.25 + 0.6 * Math.random()) * (1 - k / 8), t + dur * k / 7);   // rolling rumble
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(lp); lp.connect(g); g.connect(n.comp);
+    s.start(t, Math.random() * 3); s.stop(t + dur + 0.1);
+  }
+  function birdSong(n, t){
+    const c = n.ctx, notes = 2 + Math.floor(Math.random() * 5), base = 2200 + Math.random() * 2600, pan = Math.random() * 1.6 - 0.8;
+    const out = c.createStereoPanner ? c.createStereoPanner() : c.createGain(); if (out.pan) out.pan.value = pan;
+    const dist = c.createGain(); dist.gain.value = 0.04 + Math.random() * 0.08; out.connect(dist); dist.connect(n.comp);
+    let tt = t;
+    for (let k = 0; k < notes; k++){
+      const o = c.createOscillator(), g = c.createGain(), d = 0.05 + Math.random() * 0.11, f = base * (0.85 + Math.random() * 0.35);
+      o.frequency.setValueAtTime(f, tt); o.frequency.exponentialRampToValueAtTime(f * (Math.random() < 0.5 ? 1.35 : 0.75), tt + d);
+      g.gain.setValueAtTime(0, tt); g.gain.linearRampToValueAtTime(1, tt + 0.01); g.gain.linearRampToValueAtTime(0, tt + d);
+      o.connect(g); g.connect(out); o.start(tt); o.stop(tt + d + 0.02);
+      tt += d + 0.03 + Math.random() * 0.08;
+    }
+  }
+  function cricketChirp(n, t, cr){
+    const c = n.ctx, o = c.createOscillator(), g = c.createGain(), p = c.createStereoPanner ? c.createStereoPanner() : null;
+    o.frequency.value = cr.f; g.gain.value = 0;
+    for (let k = 0; k < 3; k++){ const a = t + k * 0.03; g.gain.setValueAtTime(0, a); g.gain.linearRampToValueAtTime(cr.level, a + 0.004); g.gain.linearRampToValueAtTime(0, a + 0.018); }
+    o.connect(g); if (p){ p.pan.value = cr.pan; g.connect(p); p.connect(n.comp); } else g.connect(n.comp);
+    o.start(t); o.stop(t + 0.12);
+  }
+  // conditions from the weather: rain (0..1), rain on the glass, wind (m/s), gust, birds/crickets, temperature
+  function conditions(){
+    const f = window.__soundForce; if (f) return f;
+    const pr = Weather.precip(), w = Weather.surfaceWind(), cur = Weather.state.cur;
+    const T = cur && typeof cur.temperature_2m === 'number' ? cur.temperature_2m : 15;
+    const now = new Date(), mo = now.getMonth() + 1, sun = Weather.sun(), el = sun ? sun.el : (now.getHours() >= 7 && now.getHours() < 19 ? 20 : -20);
+    const rain = pr ? pr.rain : 0;
+    const birds = (mo >= 4 && mo <= 8 && el > -6 && el < 12 && rain < 0.05 && T > 4) ? 1 : (mo >= 3 && mo <= 10 && el > 0 && rain < 0.05 && T > 6 ? 0.15 : 0);
+    const crickets = (mo >= 6 && mo <= 9 && el < -4 && T > 13 && rain < 0.05) ? 1 : 0;
+    return {rain, glass: Glass.state.wet, wind: w.speed, gust: w.gust, birds, crickets, T};
+  }
+  // every ~100 ms: set levels and schedule events a little ahead
+  function tick(n, c, now, dt){
+    const r = c.rain, wnd = Math.min(c.wind, 25);
+    n.rainG.gain.setTargetAtTime(0.18 * Math.sqrt(r), now, 0.8);
+    n.patG.gain.setTargetAtTime(0.22 * r, now, 0.8);
+    n.gust += ((Math.random() * 2 - 1) * 0.5 - n.gust * 0.15) * dt * 3;       // slow random walk
+    const g = Math.max(0, 1 + n.gust * Math.max(0, c.gust - c.wind) / Math.max(c.wind, 1));
+    n.windG.gain.setTargetAtTime(0.85 * Math.pow(wnd / 20, 1.6) * g, now, 0.6);
+    n.windBP.frequency.setTargetAtTime(180 + wnd * 18 * g, now, 0.8);
+    n.whG.gain.setTargetAtTime(wnd > 11 ? 0.015 * ((wnd - 11) / 10) * g : 0, now, 0.8);
+    n.whBP.frequency.setTargetAtTime(700 + wnd * 40 * g, now, 1.2);
+    // drops ticking on the glass
+    const drips = (c.glass > 0.05 ? c.glass : 0) * (r * 25 + 0.3);
+    for (let k = 0; k < 4; k++) if (Math.random() < drips * dt / 4) drip(n, now + Math.random() * dt);
+    if (c.birds > 0 && Math.random() < c.birds * 0.35 * dt) birdSong(n, now + Math.random() * dt);
+    if (c.crickets > 0){
+      const F = c.T * 9 / 5 + 32, perSec = Math.max(0.3, (4 * F - 160) / 60);   // Dolbear's law
+      if (!SD.crickets.length) for (let k = 0; k < 3; k++) SD.crickets.push({f: 4200 + Math.random() * 900, pan: Math.random() * 1.6 - 0.8, level: 0.02 + Math.random() * 0.03, next: now + Math.random(), jitter: 0.95 + Math.random() * 0.1});
+      for (const cr of SD.crickets){ while (cr.next < now + dt){ cricketChirp(n, Math.max(now, cr.next), cr); cr.next += 1 / (perSec * cr.jitter); } }
+    } else SD.crickets.length = 0;
+  }
+  // per rendered frame (cheap): start/stop the audio, hear lightning
+  function frame(dt){
+    if (!P.sound){ if (SD.ctx && SD.ctx.state === 'running') SD.ctx.suspend(); return; }
+    if (!SD.ctx){
+      try { SD.ctx = new (window.AudioContext || window.webkitAudioContext)(); SD.nodes = build(SD.ctx); }
+      catch (e){ SD.why = 'Audio unavailable: ' + e.message; P.sound = false; return; }
+    }
+    const ctx = SD.ctx, n = SD.nodes;
+    if (ctx.state === 'suspended'){ ctx.resume().catch(() => {}); }
+    n.master.gain.setTargetAtTime(ctx.state === 'running' ? P.soundVol : 0, ctx.currentTime, 0.5);
+    // thunder: each new lightning flash is heard 1-14 s later (sound travels ~3 s per km)
+    if (Fx.bolts > SD.bolts){ SD.bolts = Fx.bolts; const km = 0.5 + Math.random() * 4.5; thunder(n, ctx.currentTime + km * 2.9, km < 1.5); }
+    if (ctx.currentTime > SD.next){ tick(n, conditions(), ctx.currentTime, 0.1); SD.next = ctx.currentTime + 0.1; }
+  }
+  // browsers allow sound only after a click: resume on the first one
+  addEventListener('pointerdown', () => { if (SD.ctx && P.sound) SD.ctx.resume().catch(() => {}); }, {passive: true});
+  return {frame, build, tick, thunder, state: SD};
 })();
 
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------

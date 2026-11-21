@@ -117,6 +117,18 @@ Settings: **Aircraft size** (1 = true size, which is two or three pixels for an 
 
 Coverage depends on volunteer receivers near you. Aircraft without ADS-B (some light aircraft) don't appear.
 
+## Ambient sound (off by default)
+
+Turn on **Ambient sound** for a soundscape synthesised live from the weather (no recordings):
+
+- **Rain** hiss and patter scaled to the rain, plus drops ticking on the glass when they're hitting your window.
+- **Wind** rush following the live wind speed and gusts, with a faint whistle in strong wind.
+- **Thunder** after each lightning flash, delayed by a random storm distance (about 3 seconds per km): near strikes crack, distant ones rumble.
+- **Birds** around dawn from spring to late summer, when it's mild and dry.
+- **Crickets** on warm summer nights, chirping at the rate real crickets do at the current temperature (Dolbear's law).
+
+In a browser, sound starts after your first click (a browser rule). In Lively, the wallpaper's volume is also governed by Lively's audio settings.
+
 ## Running it in a browser
 
 Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings panel: the wallpaper settings on top, then every Cloudscape renderer setting. Settings and your chosen image are saved in the browser. URL parameters also work, e.g. `index.html?location=Oslo&bgMode=Image&panel=1`.

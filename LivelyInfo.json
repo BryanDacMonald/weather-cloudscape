@@ -1,9 +1,9 @@
 {
-  "AppVersion": "2.6.0.0",
+  "AppVersion": "3.0.0.0",
   "Title": "Weather Cloudscape",
   "Thumbnail": "thumbnail.jpg",
   "Preview": null,
-  "Desc": "Volumetric clouds driven by your live local weather (Open-Meteo), with the real sun, Moon, planets and stars, real-time aircraft with lights and contrails (adsb.lol), rain, snow and lightning. Use the procedural valley or your own background image. Based on Cloudscape by Michael Cook (MIT).",
+  "Desc": "A virtual window: volumetric clouds from your live local weather, the real sun, Moon, planets, stars, aurora, ISS and meteors, real-time aircraft, raindrops and frost on the glass, snow, fog and wind in your own landscape photo, night lights and ambient sound. Based on Cloudscape by Michael Cook (MIT).",
   "Author": "Weather Cloudscape",
   "License": "MIT",
   "Contact": "https://github.com/Fishypants/cloudscape",
