@@ -75,6 +75,16 @@ The wallpaper behaves like a pane of glass you look through:
 
 **Glass effects** sets the strength (0 = off).
 
+## Weather on the ground
+
+With a background image, the landscape itself reacts to the weather:
+
+- **Snow cover** follows the real snow depth: greenery goes dormant and lit surfaces whiten, while shadows under trees stay dark.
+- **Wet ground** after rain in the past few hours: the scene darkens slightly, and paths and roads darken most. It dries over about four hours.
+- **Ground fog** settles over the low ground on calm, near-saturated nights and mornings, and whenever fog is reported, drifting slowly.
+
+These need pixel access to your image, like Auto sky detection.
+
 ## The night sky
 
 With live weather on, the night sky is the real one for your location and time:

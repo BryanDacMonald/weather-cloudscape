@@ -10,8 +10,9 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 #c{position:fixed;inset:0}
 #c.interactive{cursor:grab}
 #c.drag{cursor:grabbing}
-#fg,#fgsway,#fglights,#fx,#glass{position:fixed;inset:0;pointer-events:none}
+#fg,#fgsway,#fglights,#fgfog,#fx,#glass{position:fixed;inset:0;pointer-events:none}
 #fglights{mix-blend-mode:screen}
+#fgfog{filter:url(#relight)}
 #fg,#fgsway{filter:url(#relight)}
 #flash{position:fixed;inset:0;background:#dfe8ff;opacity:0;pointer-events:none;mix-blend-mode:screen}
 #wx{position:fixed;right:18px;top:14px;color:rgba(255,255,255,.82);font-size:13px;text-align:right;pointer-events:none;
@@ -52,6 +53,7 @@ select option{background:#1a2030}
 <canvas id="fg"></canvas>
 <canvas id="fgsway" style="display:none"></canvas>
 <canvas id="fglights" style="display:none"></canvas>
+<canvas id="fgfog" style="display:none"></canvas>
 <canvas id="fx"></canvas>
 <canvas id="glass" style="display:none"></canvas>
 <div id="flash"></div>
@@ -99,6 +101,7 @@ const SCHEMA = [
   {id:'motion',   label:'Cloud motion',min:1,    max:60,  step:1,    v:12,   fmt:v=>v+'× real'},
   {id:'precip',   label:'Rain, snow & lightning', type:'check', v:true},
   {id:'glass',    label:'Window glass: raindrops, fog & frost', type:'check', v:true},
+  {id:'groundFx', label:'Snow cover, wet ground & ground fog', type:'check', v:true, on:()=>Bg.rebuild()},
   {id:'glassAmt', label:'Glass effects', min:0, max:1.5, step:0.05, v:1, fmt:v=>v.toFixed(2)+'×'},
   {id:'showWx',   label:'Weather readout', type:'check', v:true},
   {id:'units',    label:'Units',       type:'select', options:['°C','°F'], v:'°C', on:()=>Weather.render()},
@@ -279,7 +282,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2436,6 +2439,8 @@ function render(now){
   Bg.frame(L, Weather.overcast(), Sky.moonLight());
   Bg.sway();
   Bg.lights(L, typeof window.__flashForce === 'number' ? window.__flashForce : Fx.flashEV / 2.2);   // __flashForce: test hook
+  Bg.groundFog(dt);
+  if (frame % 60 === 0) Bg.groundTick();
   Glass.frame(dt);
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
@@ -2697,6 +2702,19 @@ const Weather = (() => {
     try { return (await getJSON(base + FULL)).current; }
     catch (e){ if (e.status === 400) return (await getJSON(base + MINI)).current; throw e; }   // a field was rejected: retry with the basics
   }
+  // snow depth now, and rain in the past 6 hours (for wet ground)
+  async function fetchGround(loc){
+    const j = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${loc.lat.toFixed(2)}&longitude=${loc.lon.toFixed(2)}&hourly=snow_depth,precipitation,snowfall&past_hours=6&forecast_hours=1&timezone=GMT`);
+    const h = j.hourly; if (!h || !h.time) return;
+    const now = Date.now(); let snow = 0, rain = 0, lastRain = -1;
+    for (let i = 0; i < h.time.length; i++){
+      const t = Date.parse(h.time[i] + 'Z'); if (t > now) continue;
+      if (typeof h.snow_depth[i] === 'number') snow = h.snow_depth[i];
+      const pr = (h.precipitation[i] || 0) - (h.snowfall[i] || 0) * 0.7;      // snowfall (cm) is ~0.7 mm water per cm
+      if (pr > 0.05){ rain += pr; lastRain = t; }
+    }
+    W.ground = {snowDepth: snow, rain6h: rain, lastRain};
+  }
   function accept(loc, cur, at, snap){
     W.loc = loc; W.cur = cur; W.at = at;
     W.target = mapWeather(cur);
@@ -2715,6 +2733,7 @@ const Weather = (() => {
       const locChanged = !W.loc || Math.abs(W.loc.lat - loc.lat) + Math.abs(W.loc.lon - loc.lon) > 0.5;
       accept(loc, cur, Date.now(), locChanged);
       W.err = ''; W.fails = 0;
+      fetchGround(loc).catch(e => console.warn('ground data:', e.message));
       lsSet('wcs.wx', {loc, cur, t: W.at});
       W.timer = setTimeout(refresh, 15 * 60e3);           // Open-Meteo updates "current" every 15 minutes
     } catch (e){
@@ -2804,7 +2823,25 @@ const Weather = (() => {
     else if (W.err){ note = `Weather unavailable: ${W.err}`; if (P.showWx) line('dim', `⚠ Weather unavailable: ${W.err}`); }
     setNote('wxnote', note);
   }
-  return {init, refresh, onToggle, step, sun, windToward, overcast, precip, surfaceWind, render: readout, state: W};
+  // what the ground looks like now: snow cover 0..1, wetness 0..1, ground fog 0..1
+  function ground(){
+    const f = window.__groundForce; if (f) return f;
+    if (!P.liveWeather || !W.cur) return {snow: 0, wet: 0, fog: 0};
+    const c = W.cur, g = W.ground || {snowDepth: 0, rain6h: 0, lastRain: -1};
+    const snow = clamp(Math.pow(Math.max(0, g.snowDepth) / 0.08, 0.6), 0, 1) * (g.snowDepth > 0.005 ? 1 : 0);   // depth in m
+    let wet = 0;
+    if (typeof c.rain === 'number' && c.rain + (c.showers || 0) > 0.05) wet = 1;
+    else if (g.lastRain > 0) wet = clamp(g.rain6h / 2, 0.3, 1) * clamp(1 - (Date.now() - g.lastRain) / (4 * 3600e3), 0, 1);
+    if (typeof c.temperature_2m === 'number' && c.temperature_2m < -1) wet *= 0.3;   // frozen
+    const T = c.temperature_2m, dep = (typeof T === 'number' && typeof c.dew_point_2m === 'number') ? T - c.dew_point_2m : 9;
+    const calm = smooth(3, 1, typeof c.wind_speed_10m === 'number' ? c.wind_speed_10m : 3);
+    const hr = new Date().getHours(), nightish = (hr >= 20 || hr <= 10) ? 1 : 0.35;
+    let fog = smooth(1.8, 0.3, dep) * calm * nightish;
+    if (c.weather_code === 45 || c.weather_code === 48) fog = Math.max(fog, 0.85);
+    if (typeof c.visibility === 'number') fog = Math.max(fog, smooth(4000, 400, c.visibility) * 0.8);
+    return {snow, wet, fog: clamp(fog, 0, 1)};
+  }
+  return {init, refresh, onToggle, step, sun, windToward, overcast, precip, surfaceWind, ground, render: readout, state: W};
 })();
 
 // ---- background image: foreground photo over the rendered sky --------------------------
@@ -3128,7 +3165,7 @@ const Bg = (() => {
   }
   function rebuild(){
     notes();
-    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; LT.cv.style.display = 'none'; resetHistory = true; return; }
+    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; LT.cv.style.display = 'none'; document.getElementById('fgfog').style.display = 'none'; resetHistory = true; return; }
     cv.style.display = '';
     const dpr = Math.min(devicePixelRatio || 1, 2), W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
     cv.width = W; cv.height = H;
@@ -3136,6 +3173,7 @@ const Bg = (() => {
     ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, W, H);
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(mode === 'auto' ? cutCanvas() : B.img, r.x, r.y, r.w, r.h);
+    applyGround(W, H);
     B.autoH = null;
     if (mode === 'auto'){
       const sb = skyBottomOf(B.autoSky); if (sb !== null) B.autoH = (r.y + sb * r.h) / H;
@@ -3442,6 +3480,75 @@ void main(){
       x.globalCompositeOperation = 'source-over';
     }
   }
+  // snow cover and wet surfaces, applied to the composited image (so sway, glass and relighting all see them)
+  const GR = {key: '', fog: null, fogKey: ''};
+  function groundKey(){ const g = Weather.ground(); return P.groundFx ? `${(Math.round(g.snow * 10) / 10)}|${Math.round(g.wet * 10) / 10}` : 'off'; }
+  function applyGround(W, H){
+    GR.key = groundKey();
+    const g = Weather.ground();
+    if (!P.groundFx || (g.snow < 0.05 && g.wet < 0.05)) return;
+    let id;
+    try { id = ctx.getImageData(0, 0, W, H); } catch (e){ return; }      // pixels unreadable: no ground effects
+    const d = id.data, sn = g.snow, wt = g.wet * (1 - sn);
+    for (let i = 0; i < d.length; i += 4){
+      if (d[i + 3] < 8) continue;
+      let r = d[i] / 255, gg = d[i + 1] / 255, b = d[i + 2] / 255;
+      const Y = 0.299 * r + 0.587 * gg + 0.114 * b, mx = Math.max(r, gg, b), sat = mx ? (mx - Math.min(r, gg, b)) / mx : 0;
+      if (sn > 0){
+        // dormant vegetation, then snow on lit surfaces; dark interiors (under trees, shadows) stay dark
+        const grey = Y * 0.92; r += (grey - r) * 0.65 * sn; gg += (grey - gg) * 0.7 * sn; b += (grey * 1.02 - b) * 0.6 * sn;
+        const lit = smooth(0.1, 0.42, Y), cover = sn * lit * (0.75 + 0.25 * (1 - sat));
+        const sY = 0.62 + 0.38 * Math.min(1, Y * 1.6);
+        r += (sY * 0.97 - r) * cover; gg += (sY * 0.985 - gg) * cover; b += (sY - b) * cover;
+      }
+      if (wt > 0){
+        // wet: darker and a touch more saturated; paved/grey surfaces darken most
+        const paved = 1 - smooth(0.12, 0.3, sat);
+        const k = 1 - wt * (0.16 + 0.22 * paved);
+        const m = (r + gg + b) / 3, s2 = 1 + 0.18 * wt * (1 - paved);
+        r = (m + (r - m) * s2) * k; gg = (m + (gg - m) * s2) * k; b = (m + (b - m) * s2) * k;
+      }
+      d[i] = r * 255; d[i + 1] = gg * 255; d[i + 2] = b * 255;
+    }
+    ctx.putImageData(id, 0, 0);
+  }
+  // ground fog: a drifting band settling over the low ground around the horizon (relit with the image)
+  function groundFog(dt){
+    const fc = document.getElementById('fgfog'), g = Weather.ground(), amt = P.groundFx ? g.fog : 0;
+    if (!active() || amt < 0.02){ if (fc.style.display !== 'none') fc.style.display = 'none'; return; }
+    fc.style.display = '';
+    const W = cv.width, H = cv.height;
+    if (fc.width !== W || fc.height !== H){ fc.width = W; fc.height = H; }
+    if (!GR.fog){                                                    // tiling soft noise, made once
+      const n = document.createElement('canvas'); n.width = 512; n.height = 128;
+      const x = n.getContext('2d'), im = x.createImageData(512, 128);
+      const hh = (a, b) => { const v = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return v - Math.floor(v); };
+      const vn = (u, v, per) => { const i = Math.floor(u), j = Math.floor(v), fu = u - i, fv = v - j, su = fu * fu * (3 - 2 * fu), sv = fv * fv * (3 - 2 * fv);
+        const a = hh(i % per, j % 4), b = hh((i + 1) % per, j % 4), c2 = hh(i % per, (j + 1) % 4), e = hh((i + 1) % per, (j + 1) % 4);
+        return (a + (b - a) * su) + ((c2 + (e - c2) * su) - (a + (b - a) * su)) * sv; };
+      for (let y = 0; y < 128; y++) for (let xx = 0; xx < 512; xx++){
+        const v = vn(xx / 64, y / 32, 8) * 0.6 + vn(xx / 24, y / 12, 21.33) * 0.4, k = (y * 512 + xx) * 4;
+        im.data[k] = im.data[k + 1] = im.data[k + 2] = 255; im.data[k + 3] = Math.round(255 * Math.min(1, Math.max(0, (v - 0.25) * 1.6)) * Math.pow(Math.sin(Math.PI * (y + 0.5) / 128), 1.5));   // soft top and bottom
+      }
+      x.putImageData(im, 0, 0); GR.fog = n;
+    }
+    const x = fc.getContext('2d'), hz = horizon() * H, t = performance.now() / 1000;
+    x.clearRect(0, 0, W, H);
+    const band = H * (0.12 + 0.2 * amt), top = hz - band * 0.35;
+    // base haze, densest just below the horizon
+    const gr = x.createLinearGradient(0, top, 0, hz + band);
+    gr.addColorStop(0, 'rgba(225,230,236,0)'); gr.addColorStop(0.35, `rgba(225,230,236,${(0.55 * amt).toFixed(3)})`);
+    gr.addColorStop(0.7, `rgba(225,230,236,${(0.3 * amt).toFixed(3)})`); gr.addColorStop(1, 'rgba(225,230,236,0)');
+    x.fillStyle = gr; x.fillRect(0, top, W, band * 1.35);
+    // two drifting wisps layers
+    x.globalAlpha = 0.45 * amt;
+    for (const [sp, sc, oy] of [[6, 1, 0], [11, 0.6, 0.3]]){
+      const tw = W * 1.2 * sc, th = band * 0.9, off = (t * sp) % tw;
+      for (let k = -1; k < W / tw + 1; k++) x.drawImage(GR.fog, k * tw - off, hz - th * (0.2 + oy), tw, th);
+    }
+    x.globalAlpha = 1;
+  }
+  function groundTick(){ if (active() && P.groundFx !== undefined && groundKey() !== GR.key) rebuild(); }
   function notes(){
     let n = '';
     if (P.bgMode === 'Image'){
@@ -3521,7 +3628,7 @@ void main(){
     }, 'image/png');
   }
   function onMode(){ resetHistory = true; if (P.bgMode === 'Image' && !B.img && !B.err) load(P.bgImage); else rebuild(); }
-  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, lights, rebuildLights, state: B, swayState: SW, lightState: LT};
+  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, lights, rebuildLights, groundFog, groundTick, state: B, swayState: SW, lightState: LT};
 })();
 
 // ---- rain / snow / lightning overlay ------------------------------------------------------
