@@ -75,6 +75,8 @@ The wallpaper behaves like a pane of glass you look through:
 
 **Glass effects** sets the strength (0 = off).
 
+**Parallax.** Your mouse stands in for your head: move it and the scene shifts behind the "window" (your screen edges), the sky slightly more than the landscape, as distant things do through real glass. Raindrops and frost on the glass stay put. After 20 seconds without mouse movement the view drifts back to centre. Lively must forward mouse input to the wallpaper (its default). **Parallax** sets the strength (0 = off).
+
 ## Weather on the ground
 
 With a background image, the landscape itself reacts to the weather:

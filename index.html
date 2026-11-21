@@ -142,6 +142,7 @@ const SCHEMA = [
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
+  {id:'parallax', label:'Parallax (mouse = head)', min:0, max:2, step:0.05, v:0.6, fmt:v=>v ? v.toFixed(2)+'×' : 'off'},
   {id:'fpsCap',   label:'Frame cap',   type:'select', options:['10','15','20','30','60'], v:'30', on:NOP},
   {id:'interactive', label:'Mouse look / WASD fly (off for wallpaper use)', type:'check', v:false, on:()=>canvas.classList.toggle('interactive', P.interactive)},
   {sec:'Time of day'},
@@ -286,7 +287,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2483,6 +2484,7 @@ function render(now){
   Bg.groundFog(dt);
   if (frame % 60 === 0) Bg.groundTick();
   Glass.frame(dt);
+  Parallax.step(dt);
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
     fpsShown = 1000 / avg; statsT = now;
@@ -3964,7 +3966,7 @@ const Flights = (() => {
   const maxPt = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1] || 64;
   let bufA = new Float32Array(4096 * 10), bufL = new Float32Array(1024 * 10);
   const labelBox = document.createElement('div'); labelBox.style.cssText = 'position:fixed;inset:0;pointer-events:none;overflow:hidden';
-  document.body.insertBefore(labelBox, document.getElementById('flash'));
+  document.body.insertBefore(labelBox, document.getElementById('flash')); window.__labelBox = labelBox;
   const labels = new Map();
   function draw(VP, eye, fov, hc, extra = []){
     const L = loc();
@@ -4415,6 +4417,34 @@ const Space = (() => {
     return {uniforms, points: out};
   }
   return {update, state: SP, geomag, activeShowers, issEci, observerEci};
+})();
+
+// ---- parallax: the view shifts with the mouse (standing in for your head) like a scene behind a window ----
+// Through a window, distant things move WITH your head relative to the frame; nearer things a little less.
+// The glass (raindrops, frost) is the frame's plane, so it stays put.
+const Parallax = (() => {
+  const PX = {tx: 0, ty: 0, x: 0, y: 0, lastMove: -1e9, applied: ''};
+  addEventListener('pointermove', e => {
+    PX.tx = (e.clientX / innerWidth) * 2 - 1; PX.ty = (e.clientY / innerHeight) * 2 - 1; PX.lastMove = performance.now();
+  }, {passive: true});
+  const sky = () => [canvas], fg = () => ['fg', 'fgsway', 'fglights', 'fgfog'].map(id => document.getElementById(id));
+  function step(dt){
+    const k = P.parallax;
+    const idle = performance.now() - PX.lastMove > 20000;
+    const tx = k > 0 && !idle ? PX.tx : 0, ty = k > 0 && !idle ? PX.ty : 0;
+    const e = 1 - Math.exp(-dt / (idle ? 2.5 : 0.35));            // head moves smoothly; drifts home slowly
+    PX.x += (tx - PX.x) * e; PX.y += (ty - PX.y) * e;
+    const amp = 0.018 * k, sc = 1 + 2 * amp + 0.002;               // overscan so edges never show
+    const key = `${PX.x.toFixed(4)},${PX.y.toFixed(4)},${k}`;
+    if (key === PX.applied) return;
+    PX.applied = key;
+    // moving your head right shows the scene shifted right; the sky (infinity) most, the landscape ~90% as much
+    const t = (f) => k > 0 ? `translate(${(PX.x * amp * f * 100).toFixed(3)}vw, ${(PX.y * amp * f * 0.6 * 100).toFixed(3)}vh) scale(${sc.toFixed(4)})` : '';
+    for (const el of sky()) el.style.transform = t(1);
+    for (const el of fg()) if (el) el.style.transform = t(0.9);
+    if (window.__labelBox) window.__labelBox.style.transform = t(1);
+  }
+  return {step, state: PX};
 })();
 
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------
