@@ -150,6 +150,11 @@ const SCHEMA = [
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
+  {id:'showStatus', label:'Status panel (is everything working?)', type:'check', v:false},
+  {id:'keepSettings', label:'Keep my settings when reinstalling', type:'check', v:true},
+  {id:'checkUpdates', label:'Check GitHub for updates (once a day)', type:'check', v:true},
+  {id:'exportSettings', label:'Export settings', type:'button', on:()=>exportSettings()},
+  {id:'importSettings', label:'Import settings', type:'button', on:()=>importSettings()},
   {id:'sound',    label:'Ambient sound (rain, wind, thunder, birds, crickets)', type:'check', v:false},
   {id:'soundVol', label:'Volume', min:0, max:1, step:0.01, v:0.5, fmt:v=>Math.round(v*100)+'%'},
   {id:'parallax', label:'Parallax (mouse = head)', min:0, max:2, step:0.05, v:0.6, fmt:v=>v ? v.toFixed(2)+'×' : 'off'},
@@ -298,14 +303,15 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','birds','birdAmt','traffic','roadsMask','viewHeight']);
-let saveTimer = 0, booted = false;
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','birds','birdAmt','traffic','roadsMask','viewHeight']);
+let saveTimer = 0, booted = false, hostBurst = true;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
   if (booted){
     if (s && s.on) s.on(); else if (s && s.type === 'select') onQualityChange();
   }
-  if (PERSIST.has(id)){
+  if (id === 'keepSettings') lsSet('wcs.keep', !!P.keepSettings);
+  if (PERSIST.has(id) && !(hostSeen && hostBurst)){              // don't let the host's start-up values overwrite what we saved
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       const o = {}; for (const k of PERSIST) o[k] = P[k];
@@ -2231,6 +2237,8 @@ function duskExposure(L){
   const t = (x, a, b) => { const u = Math.max(0, Math.min(1, (x - a) / (b - a))); return u * u * (3 - 2 * u); };
   return 1 - 0.6 * t(el, -8, -2) * (1 - t(el, 4, 16));
 }
+const VERSION = '2.4.0';   // keep in step with LivelyInfo.json and the GitHub release tag
+const STAT = {fps: 0, gpuMs: null, timer: false, vol: [0, 0], idle: false};
 const DEG = Math.PI / 180, HOME_YAW = 295.83 * DEG, HOME_PITCH = 3.95 * DEG, HOME_POS = [-8.5514, 0.8047, -3.4189];
 function render(now){
   // wallpaper frame cap: skip vsyncs until the next frame is due (small slack so 30 on 60 Hz hits every 2nd vsync)
@@ -2505,9 +2513,11 @@ function render(now){
   Glass.frame(dt);
   Parallax.step(dt);
   Sound.frame(dt);
+  Status.update(L);
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
     fpsShown = 1000 / avg; statsT = now;
+    Object.assign(STAT, {fps: fpsShown, gpuMs: useGpu ? gavg : null, timer: !!tq, vol: S.low.slice(), volScale: S.volScale, maxScale: q.scale, budgetMs: hiT});
     const gtxt = useGpu ? ` · gpu ${gavg.toFixed(1)}ms` : (tq ? '' : ' · no gpu timer');
     document.getElementById('stats').textContent = `${fpsShown.toFixed(0)} fps${gtxt} · vol ${S.low[0]}×${S.low[1]}`;
   }
@@ -2881,6 +2891,7 @@ const Weather = (() => {
         line('big', `${typeof c.temperature_2m === 'number' ? fmtTemp(c.temperature_2m) : ''}  ${WMO[c.weather_code] || ''}`);
         line('', `☁ ${Math.round(c.cloud_cover)}% cloud cover · wind ${fmtWind(c.wind_speed_10m || 0)} ${compass(c.wind_direction_10m || 0)}`);
         line('dim', `${W.loc ? W.loc.name : ''} · ${ago < 1 ? 'just updated' : `updated ${ago} min ago`}${W.err ? ' · offline, retrying' : ''}`);
+        if (typeof Updates !== 'undefined' && Updates.state.newer) line('dim', `update ${Updates.state.newer} available on GitHub`);
       }
       note = `${W.loc ? W.loc.name : ''}: ${Math.round(c.cloud_cover)}% cover (low ${c.cloud_cover_low ?? '?'} / mid ${c.cloud_cover_mid ?? '?'} / high ${c.cloud_cover_high ?? '?'}) → ${W.target.kind}` + (W.err ? `\nLast update failed: ${W.err}` : '');
     } else if (W.busy) { note = 'Fetching weather…'; if (P.showWx) line('dim', 'Fetching local weather…'); }
@@ -3691,6 +3702,7 @@ void main(){
       const dir = Math.random() < 0.5 ? 1 : -1;
       if (TR.cars.some(c => c.road === ri && c.dir === dir && (dir > 0 ? c.s : r.len - c.s) < 0.03)) return;   // keep a gap
       const col = pickColour();
+      TR.lastCar = Date.now(); TR.carCount = (TR.carCount || 0) + 1;
       TR.cars.push({road: ri, dir, s: dir > 0 ? 0 : r.len, v: (10 + Math.random() * 5) * (P.trafficSpeed || 1), col, len: 4.3 + Math.random() * 1.2, born: now});
       if (window.Sound) Sound.carPass && Sound.carPass(r.len, dir);
     });
@@ -4065,7 +4077,7 @@ const Flights = (() => {
         j = r; srcIdx = i; F.src = new URL(SOURCES[i](0, 0, 0)).host;
       } catch (e){ lastErr = e.message; }
     }
-    if (j){ ingest(j, L); F.err = ''; F.fails = 0; F.timer = setTimeout(poll, interval()); }
+    if (j){ ingest(j, L); F.err = ''; F.fails = 0; F.okAt = Date.now(); F.timer = setTimeout(poll, interval()); }
     else { F.err = lastErr; F.fails++; F.timer = setTimeout(poll, Math.min(300, 15 * 2 ** F.fails) * 1000); console.warn('flights:', lastErr); }
     note();
   }
@@ -4432,12 +4444,12 @@ const Space = (() => {
       const last = Array.isArray(j) && j[j.length - 1];
       const kp = last ? (typeof last.estimated_kp === 'number' ? last.estimated_kp : last.kp_index) : null;
       if (typeof kp !== 'number') throw new Error('unexpected Kp data');
-      SP.kp = kp; SP.kpErr = '';
+      SP.kp = kp; SP.kpErr = ''; SP.kpOkAt = Date.now();
     } catch (e){
       try {
         const j = await fetchJSON('https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json', 20000);
         const kp = parseFloat(j[j.length - 1][1]); if (!isFinite(kp)) throw e;
-        SP.kp = kp; SP.kpErr = '';
+        SP.kp = kp; SP.kpErr = ''; SP.kpOkAt = Date.now();
       } catch (e2){ SP.kpErr = e.message; }
     }
   }
@@ -4447,7 +4459,7 @@ const Space = (() => {
       const j = await fetchJSON('https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=json', 20000);
       const o = Array.isArray(j) ? j[0] : j;
       if (!o || typeof o.MEAN_MOTION !== 'number') throw new Error('unexpected orbital data');
-      SP.iss = o; SP.issErr = '';
+      SP.iss = o; SP.issErr = ''; SP.issOkAt = Date.now();
     } catch (e){ SP.issErr = e.message; }
   }
   // ---- aurora ----
@@ -4546,6 +4558,7 @@ const Space = (() => {
     if (src.rad){ dir = v3.sub(start, v3.scale(src.rad, v3.dot(start, src.rad))); if (v3.dot(dir, dir) < 1e-6) return; dir = v3.norm(dir); }
     else { const t2 = v3.norm(v3.cross(start, [0, 1, 0])); const k = Math.random() * 2 * Math.PI; dir = v3.norm(v3.add(v3.scale(t2, Math.cos(k)), v3.scale(v3.cross(start, t2), Math.sin(k) * 0.6 - 0.4))); }
     const mag = -1 + Math.random() * Math.random() * 5;
+    SP.lastMeteor = Date.now(); SP.meteorCount = (SP.meteorCount || 0) + 1;
     SP.meteors.push({start, dir, len: (4 + Math.random() * 14) * DEG, dur: 0.25 + Math.random() * 0.6, t: 0, mag});
   }
   // per frame: uniforms for the composite shader, and light points for the overlay pass
@@ -4779,6 +4792,7 @@ const Birds = (() => {
     };
   }
   function spawn(kind, W, H, hz, scale, north){
+    BD.last = {kind, t: Date.now()}; BD.count = (BD.count || 0) + 1;
     const fromLeft = Math.random() < 0.5;
     const g = {kind, birds: [], t: 0, age: 0};
     const yTop = H * 0.06, yBot = hz - H * 0.03, y = yTop + Math.random() * (yBot - yTop) * (kind === 'hawk' ? 0.6 : kind === 'songbirds' ? 1 : 0.85);
@@ -4850,12 +4864,112 @@ const Birds = (() => {
     }
     c.style.display = BD.groups.length ? '' : 'none';
   }
-  return {frame, spawn, state: BD};
+  return {frame, spawn, rates, state: BD};
+})();
+
+// ---- updates: a once-a-day check for a newer release on GitHub (can be turned off) ----------------------------
+const Updates = (() => {
+  const U = {newer: null, checkedAt: 0};
+  const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++){ if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+  async function check(){
+    if (!P.checkUpdates) return;
+    const c = lsGet('wcs.update');
+    if (c && Date.now() - c.t < 864e5){ if (c.tag && newer(c.tag, VERSION)) U.newer = c.tag; return; }
+    try {
+      const j = await fetchJSON('https://api.github.com/repos/BryanDacMonald/weather-cloudscape/releases/latest', 15000);
+      const tag = String(j.tag_name || '').replace(/^v/, '');
+      lsSet('wcs.update', {t: Date.now(), tag});
+      if (tag && newer(tag, VERSION)){ U.newer = tag; Weather.render(); }
+    } catch (e){ lsSet('wcs.update', {t: Date.now(), tag: ''}); }
+  }
+  return {check, state: U};
+})();
+
+// ---- settings export / import (a block of text you can keep and paste back) ----------------------------------
+function exportSettings(){
+  const o = {v: VERSION}; for (const k of PERSIST) o[k] = P[k];
+  const txt = 'WCS1:' + btoa(unescape(encodeURIComponent(JSON.stringify(o))));
+  const done = () => alert('Settings copied to the clipboard. Keep the text somewhere safe; paste it into "Import settings" to restore.');
+  if (navigator.clipboard && window.isSecureContext !== false) navigator.clipboard.writeText(txt).then(done, () => prompt('Copy your settings:', txt));
+  else prompt('Copy your settings:', txt);
+}
+function importSettings(){
+  const txt = prompt('Paste the settings text (starts with WCS1:)');
+  if (!txt) return;
+  try {
+    const o = JSON.parse(decodeURIComponent(escape(atob(txt.trim().replace(/^WCS1:/, '')))));
+    let n = 0; for (const k in o) if (PERSIST.has(k)){ setParam(k, o[k]); n++; }
+    alert(`Restored ${n} settings.`);
+  } catch (e){ alert('That text is not a valid settings export.'); }
+}
+
+// ---- status panel: is each feature working, and what is it doing right now? --------------------------------
+const Status = (() => {
+  const box = document.createElement('div'); box.id = 'status';
+  box.style.cssText = 'position:fixed;left:14px;top:14px;z-index:11;max-width:420px;background:rgba(10,14,22,.72);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.12);border-radius:10px;color:#dde3ea;font:12px system-ui,sans-serif;padding:10px 12px;display:none;pointer-events:none;line-height:1.5';
+  document.body.appendChild(box);
+  const ago = t => { if (!t) return 'never'; const s = (Date.now() - t) / 1000; return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`; };
+  const row = (ok, name, text) => `<div><span style="color:${ok === true ? '#7ddc8a' : ok === false ? '#ff8a7a' : '#c8b56a'}">●</span> <b>${name}</b> <span style="color:#b9c5d1">${text}</span></div>`;
+  let t = 0;
+  function update(L){
+    const show = P.showStatus;
+    box.style.display = show ? '' : 'none';
+    if (!show || performance.now() - t < 2000) return;
+    t = performance.now();
+    const W = Weather.state, out = [];
+    const esc = x => String(x).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'})[c]);
+    out.push(`<div style="font-weight:600;margin-bottom:4px">Weather Cloudscape ${VERSION} · status</div>`);
+    // weather
+    if (!P.liveWeather) out.push(row(null, 'Weather', 'live weather off (manual cloud cover)'));
+    else if (W.cur) out.push(row(!W.err, 'Weather', `${esc(W.loc ? W.loc.name : '')} · ${Math.round(W.cur.cloud_cover)}% cloud → ${W.target.kind} · updated ${ago(W.at)}${W.err ? ' · last attempt failed: ' + esc(W.err) : ''}`));
+    else out.push(row(false, 'Weather', W.err ? 'unavailable: ' + esc(W.err) : 'fetching…'));
+    const sun = Weather.sun();
+    out.push(row(!!sun, 'Sun', sun ? `elevation ${sun.el.toFixed(1)}°, azimuth ${sun.az.toFixed(0)}° (view faces ${Math.round(P.viewBearing)}°)` : 'no location yet'));
+    // background
+    if (P.bgMode === 'Image'){
+      const B = Bg.state, SWs = Bg.swayState, LTs = Bg.lightState, TRs = Bg.trafficState;
+      out.push(row(Bg.active(), 'Image', Bg.active() ? `${esc(B.name)} · sky from ${B.hasAlpha ? 'transparency' : B.cut ? 'auto detection' : 'horizon line'}${B.tainted ? ' (pixels locked)' : ''}` : esc(B.err || 'loading…')));
+      if (P.windSway > 0) out.push(row(SWs.ok, 'Wind sway', SWs.ok ? `${SWs.custom ? 'custom' : 'automatic'} mask · wind ${Weather.surfaceWind().speed.toFixed(1)} m/s` : esc(SWs.why || 'off')));
+      if (P.nightLights) out.push(row(LTs.spots.length > 0, 'Night lights', `${LTs.spots.length} lights ${LTs.custom ? 'from your mask' : 'auto-placed'}${LTs.why ? ' · ' + esc(LTs.why) : ''}`));
+      if (P.traffic > 0) out.push(row(TRs.roads.length ? true : null, 'Traffic', TRs.roads.length ? `${TRs.roads.length} roads · ${TRs.cars.length} driving now · last car ${ago(TRs.lastCar)} · ${TRs.carCount || 0} since start` : (P.roadsMask ? esc(TRs.why || 'loading roads mask…') : 'no roads mask set')));
+      const g = Weather.ground();
+      if (P.groundFx) out.push(row(true, 'Ground', `snow ${Math.round(g.snow * 100)}% · wet ${Math.round(g.wet * 100)}% · ground fog ${Math.round(g.fog * 100)}%`));
+    }
+    if (P.glass){ const Gs = Glass.state; out.push(row(Gs.why ? false : true, 'Glass', Gs.why ? esc(Gs.why) : `drops ${Math.round(Gs.wet * 100)}%${document.getElementById('glass').style.display === 'none' ? ' · nothing on the glass now' : ''}`)); }
+    // sky & space
+    out.push(row(Sky.active() ? true : null, 'Night sky', Sky.active() ? `stars, Moon (${Math.round((Sky.state.bodies ? Sky.state.bodies.moon.illum : 0) * 100)}% lit)${P.planets ? ', planets' : ''}` : 'needs live weather and a location'));
+    const SP = Space.state;
+    if (P.aurora) out.push(row(SP.kp !== null && !SP.kpErr, 'Aurora data', SP.kp !== null ? `Kp ${SP.kp.toFixed(1)} (updated ${ago(SP.kpOkAt)}) · ${SP.kp < 5 ? 'too weak to see here' : 'possible tonight'}` : SP.kpErr ? 'unavailable: ' + esc(SP.kpErr) : 'fetched after dark'));
+    if (P.iss) out.push(row(!!SP.iss && !SP.issErr, 'ISS', SP.iss ? (SP.issNow && SP.issNow.alt > 0 ? `above your horizon now (${SP.issNow.alt.toFixed(0)}°)` : 'below your horizon now') + ` · orbit ${ago(SP.issOkAt)}` : SP.issErr ? 'unavailable: ' + esc(SP.issErr) : 'fetching orbit…'));
+    if (P.meteors) out.push(row(true, 'Meteors', `${Space.activeShowers(new Date()).filter(x => x.zhr > 1).map(x => x.name).join(', ') || 'no shower active'} · last meteor ${ago(SP.lastMeteor)}`));
+    // life
+    if (P.birds){ const r = Birds.rates(L); out.push(row(true, 'Birds', r ? `expected per hour now: ${Math.round((r.songbirds + r.crow + r.geese + r.hawk) * P.birdAmt)} groups${r.geese > 1 ? ' (geese migrating)' : ''} · last ${Birds.state.last ? Birds.state.last.kind + ' ' + ago(Birds.state.last.t) : 'none yet'}` : 'none at night')); }
+    // aircraft
+    if (P.flights){ const F = Flights.state; out.push(row(F.err ? false : F.src ? true : null, 'Aircraft', F.err ? 'unavailable: ' + esc(F.err) : F.src ? `${F.count} within 50 km from ${F.src} · updated ${ago(F.okAt)}` : 'waiting for the first update')); }
+    if (P.sound){ const Sd = Sound.state; out.push(row(Sd.ctx && Sd.ctx.state === 'running', 'Sound', Sd.ctx ? (Sd.ctx.state === 'running' ? 'playing' : 'blocked until you click the desktop once') : esc(Sd.why || 'starting'))); }
+    // performance
+    out.push(row(true, 'Performance', `${STAT.fps.toFixed(0)} fps${STAT.idle ? ' (idle: nothing moving)' : ''} · ${STAT.gpuMs !== null ? `GPU ${STAT.gpuMs.toFixed(1)} ms/frame ≈ ${Math.round(STAT.gpuMs * STAT.fps / 10)}% (budget ${P.gpuBudget}%)` : (STAT.timer ? 'GPU timer starting' : 'no GPU timer (budget inactive)')} · clouds at ${STAT.vol[0]}×${STAT.vol[1]}`));
+    if (Updates.state.newer) out.push(row(null, 'Update', `version ${esc(Updates.state.newer)} is available on GitHub`));
+    box.innerHTML = out.join('');
+  }
+  return {update};
 })();
 
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------
-let hostSeen = false, bootT = 0;
+let hostSeen = false, bootT = 0, hostFirst = 0;
+// Lively sends every property at load. After a fresh install those are its defaults, which would wipe the
+// settings you had. With "Keep my settings" on, the values saved from last time are re-applied once that
+// first burst is over; changes you make afterwards in the Customise panel apply as normal.
 function applyExternal(name, val){
+  if (!hostSeen){
+    hostFirst = performance.now();
+    const saved = lsGet('wcs.settings');
+    setTimeout(() => {
+      const keep = lsGet('wcs.keep');
+      if (keep !== false && saved) for (const k in saved) if (PERSIST.has(k) && k !== 'keepSettings') setParam(k, saved[k]);
+      hostBurst = false;
+    }, 3500);
+  }
   hostSeen = true;
   const id = SCHEMA.find(s => s.id && s.id.toLowerCase() === String(name).toLowerCase());
   if (name === 'showPanel' || name === 'showpanel') return togglePanel(val === true || val === 'true' || val === 1);
@@ -4881,6 +4995,7 @@ function boot(){
   if (P.bgMode === 'Image' || P.bgImage) Bg.load(P.bgImage);
   Weather.init();
   Flights.start();
+  setTimeout(() => Updates.check(), 20000);
   addEventListener('resize', () => Bg.rebuild());
   // in a plain browser (no wallpaper host has called us), point at the settings panel once
   setTimeout(() => {

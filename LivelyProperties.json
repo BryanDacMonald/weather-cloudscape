@@ -384,5 +384,20 @@
     "type": "checkbox",
     "value": false,
     "text": "Show advanced in-page panel (all renderer settings)"
+  },
+  "showStatus": {
+    "type": "checkbox",
+    "value": false,
+    "text": "Status panel: shows whether each feature is working and what it is doing"
+  },
+  "keepSettings": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Keep my settings when reinstalling (this panel may show defaults; your saved settings are used)"
+  },
+  "checkUpdates": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Check GitHub for a newer version once a day"
   }
 }
