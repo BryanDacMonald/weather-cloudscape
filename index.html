@@ -10,8 +10,8 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 #c{position:fixed;inset:0}
 #c.interactive{cursor:grab}
 #c.drag{cursor:grabbing}
-#fg,#fx{position:fixed;inset:0;pointer-events:none}
-#fg{filter:url(#relight)}
+#fg,#fgsway,#fx{position:fixed;inset:0;pointer-events:none}
+#fg,#fgsway{filter:url(#relight)}
 #flash{position:fixed;inset:0;background:#dfe8ff;opacity:0;pointer-events:none;mix-blend-mode:screen}
 #wx{position:fixed;right:18px;top:14px;color:rgba(255,255,255,.82);font-size:13px;text-align:right;pointer-events:none;
   text-shadow:0 1px 3px rgba(0,0,0,.65);line-height:1.45;font-variant-numeric:tabular-nums}
@@ -49,6 +49,7 @@ select option{background:#1a2030}
   <feColorMatrix id="relightM" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"/></filter></svg>
 <canvas id="c"></canvas>
 <canvas id="fg"></canvas>
+<canvas id="fgsway" style="display:none"></canvas>
 <canvas id="fx"></canvas>
 <div id="flash"></div>
 <div id="wx"></div>
@@ -108,6 +109,9 @@ const SCHEMA = [
   {id:'imgFov',   label:'Sky FOV',     min:20,   max:100, step:1,    v:55,   fmt:v=>Math.round(v)+'°'},
   {id:'relight',  label:'Relight image', min:0,  max:1,   step:0.01, v:0.85, fmt:f2},
   {id:'bgExport', label:'Save cut-out PNG', type:'button', on:()=>Bg.exportCutout()},
+  {id:'windSway', label:'Wind sway',   min:0,    max:3,   step:0.05, v:1, fmt:v=>v ? v.toFixed(2)+'×' : 'off', on:()=>Bg.rebuildSway()},
+  {id:'swayMask', label:'Motion mask', type:'text', v:'', ph:'blank = automatic; or images/…-motion-mask.png', on:()=>Bg.rebuildSway()},
+  {id:'swayExport', label:'Save motion mask', type:'button', on:()=>Bg.exportMask()},
   {sec:'Night sky'},
   {id:'realSky',  label:'Real stars, Moon & planets for your location', type:'check', v:true},
   {id:'planets',  label:'Planets', type:'check', v:true, on:()=>Sky.rebuild()},
@@ -266,7 +270,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2421,6 +2425,7 @@ function render(now){
 
   gpuTimerEnd(gpuQ);
   Bg.frame(L, Weather.overcast(), Sky.moonLight());
+  Bg.sway();
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
     fpsShown = 1000 / avg; statsT = now;
@@ -2624,6 +2629,7 @@ function mapWeather(c){
   if (fog) t.haze = Math.max(t.haze, 3.5);
   t.wind = clamp(num(c.wind_speed_10m, 3) * 1.8, 2, 60);        // cloud-level wind is ~2x the 10 m wind
   t.windTo = (num(c.wind_direction_10m, 270) + 180) % 360;      // meteorological "from" -> "toward"
+  t.wind10 = num(c.wind_speed_10m, 3); t.gust = Math.max(t.wind10, num(c.wind_gusts_10m, t.wind10 * 1.5));
   const rainMM = num(c.rain, 0) + num(c.showers, 0), snowCM = num(c.snowfall, 0);
   t.rain = Math.max(RAIN_I[code] || 0, clamp(rainMM * 0.4, 0, 1));
   t.snow = Math.max(SNOW_I[code] || 0, clamp(snowCM * 0.8, 0, 1));
@@ -2636,7 +2642,7 @@ function mapWeather(c){
 // ---- weather service -----------------------------------------------------------------
 const Weather = (() => {
   const W = {loc: null, cur: null, at: 0, err: '', fails: 0, target: null, snap: true, windTo: null, frac: 0.4, sunT: 0, sunC: null, timer: 0, busy: false, again: false, uiT: 0};
-  const FULL = 'temperature_2m,dew_point_2m,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,visibility,wind_speed_10m,wind_direction_10m';
+  const FULL = 'temperature_2m,dew_point_2m,is_day,precipitation,rain,showers,snowfall,weather_code,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,visibility,wind_speed_10m,wind_direction_10m,wind_gusts_10m';
   const MINI = 'temperature_2m,is_day,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m';
   async function getJSON(url, ms = 30000){
     const ac = new AbortController(), to = setTimeout(() => ac.abort(), ms);
@@ -2750,6 +2756,15 @@ const Weather = (() => {
   }
   const windToward = () => (P.liveWeather && W.target) ? W.windTo : null;
   const overcast = () => W.frac;
+  // near-ground wind for the foreground sway: speed and gust (m/s), and how much of it crosses the view (-1 left .. 1 right)
+  const SWIND = {speed: 3, gust: 4.5};
+  function surfaceWind(){
+    const live = P.liveWeather && W.target && typeof W.target.wind10 === 'number';
+    const ts = live ? W.target.wind10 : P.wind / 1.8, tg = live ? W.target.gust : P.wind / 1.8 * 1.4;
+    SWIND.speed += (ts - SWIND.speed) * 0.02; SWIND.gust += (tg - SWIND.gust) * 0.02;   // ease toward new readings
+    const to = live ? W.windTo : 90;
+    return {speed: SWIND.speed, gust: SWIND.gust, dirX: Math.sin((to - P.viewBearing) * DEG)};
+  }
   function precip(){
     if (!P.liveWeather || !W.target) return null;
     const t = W.target, rel = ((t.windTo - P.viewBearing) * DEG);
@@ -2778,7 +2793,7 @@ const Weather = (() => {
     else if (W.err){ note = `Weather unavailable: ${W.err}`; if (P.showWx) line('dim', `⚠ Weather unavailable: ${W.err}`); }
     setNote('wxnote', note);
   }
-  return {init, refresh, onToggle, step, sun, windToward, overcast, precip, render: readout, state: W};
+  return {init, refresh, onToggle, step, sun, windToward, overcast, precip, surfaceWind, render: readout, state: W};
 })();
 
 // ---- background image: foreground photo over the rendered sky --------------------------
@@ -3102,7 +3117,7 @@ const Bg = (() => {
   }
   function rebuild(){
     notes();
-    if (!active()){ cv.style.display = 'none'; resetHistory = true; return; }
+    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; resetHistory = true; return; }
     cv.style.display = '';
     const dpr = Math.min(devicePixelRatio || 1, 2), W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
     cv.width = W; cv.height = H;
@@ -3123,6 +3138,166 @@ const Bg = (() => {
     }
     ctx.globalCompositeOperation = 'source-over';
     B.relightKey = '';
+    rebuildSway();
+  }
+  // ---- wind sway: vegetation in the image moves with the live wind (a GPU layer over the composited image) ----
+  // Motion mask (white = may move) is made in image space from vegetation colour + texture, or loaded from a file.
+  const SW = {cv: document.getElementById('fgsway'), gl: null, prog: null, tex: null, mtex: null, ok: false, why: '',
+              mask: null, maskKey: '', custom: null, customUrl: '', t0: performance.now()};
+  function swayGL(){
+    if (SW.gl) return SW.gl;
+    const g = SW.cv.getContext('webgl2', {premultipliedAlpha: true, alpha: true, antialias: false});
+    if (!g) return null;
+    const sh = (type, src) => { const s = g.createShader(type); g.shaderSource(s, src); g.compileShader(s); if (!g.getShaderParameter(s, g.COMPILE_STATUS)) throw new Error(g.getShaderInfoLog(s)); return s; };
+    const p = g.createProgram();
+    g.attachShader(p, sh(g.VERTEX_SHADER, `#version 300 es
+out vec2 vUV; void main(){ vec2 q = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); vUV = q; gl_Position = vec4(q * 2.0 - 1.0, 0.0, 1.0); }`));
+    g.attachShader(p, sh(g.FRAGMENT_SHADER, `#version 300 es
+precision highp float;
+uniform sampler2D uImg, uMask; uniform vec2 uRes; uniform float uT, uAmp, uDirX, uGust, uSpeed;
+in vec2 vUV; out vec4 o;
+float hh(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vn(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hh(i), hh(i + vec2(1, 0)), f.x), mix(hh(i + vec2(0, 1)), hh(i + vec2(1, 1)), f.x), f.y); }
+void main(){
+  float m = texture(uMask, vUV).r;
+  if (m < 0.003){ o = texture(uImg, vUV); return; }
+  vec2 p = vUV * vec2(uRes.x / uRes.y, 1.0);
+  float dir = uDirX >= 0.0 ? 1.0 : -1.0;
+  float travel = uT * (0.04 + 0.03 * uSpeed);                                   // gust fronts move downwind across the scene
+  float g = vn(vec2(p.x * 1.4 - dir * travel * 2.5, p.y * 2.2 + uT * 0.03)) * 0.65 + vn(p * 3.5 - vec2(dir * travel * 5.0, 0.0)) * 0.35;
+  float lean = (0.1 + 0.9 * g) * (1.0 + uGust * g * g);                       // mostly gusts: only change catches the eye
+  float osc = sin(uT * (1.4 + 0.08 * uSpeed) + p.x * 8.0 + g * 6.0) * 0.5;   // springy back-and-forth
+  float flutter = (vn(p * 70.0 + uT * 2.5) - 0.5) * (0.5 + 0.05 * uSpeed);     // leaves
+  float persp = 0.5 + 0.8 * (1.0 - vUV.y);                                      // lower in the frame = nearer = moves more
+  float side = abs(uDirX);
+  vec2 d = vec2(uDirX * (lean + osc) + (1.0 - side) * osc * 0.7 + flutter, lean * side * 0.08 + flutter * 0.4) * uAmp * m * persp;
+  o = texture(uImg, vUV - vec2(d.x, -d.y) / uRes);
+}`));
+    g.linkProgram(p);
+    if (!g.getProgramParameter(p, g.LINK_STATUS)) throw new Error(g.getProgramInfoLog(p));
+    SW.gl = g; SW.prog = p; SW.tex = g.createTexture(); SW.mtex = g.createTexture();
+    for (const t of [SW.tex, SW.mtex]){
+      g.bindTexture(g.TEXTURE_2D, t);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR); g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
+      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE); g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
+    }
+    return g;
+  }
+  // automatic motion mask from an image-space source (alpha 0 = sky): greens and golden grasses with fine texture
+  function autoMask(src){
+    const w = Math.min(1280, src.width), h = Math.max(1, Math.round(src.height * w / src.width));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(src, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, N = w * h, Y = new Float32Array(N), col = new Float32Array(N), m = new Float32Array(N);
+    for (let i = 0; i < N; i++){
+      const r = d[i * 4] / 255, g = d[i * 4 + 1] / 255, b = d[i * 4 + 2] / 255, a = d[i * 4 + 3] / 255;
+      Y[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+      if (a < 0.5) continue;
+      const green = clamp((g - Math.max(r * 0.9, b)) * 6, 0, 1);
+      const golden = clamp((Math.min(r, g) - b) * 4, 0, 1) * (1 - clamp((r - g) * 5, 0, 1)) * (Y[i] > 0.2 && Y[i] < 0.9 ? 1 : 0);
+      col[i] = Math.max(green, golden * 0.85);
+    }
+    for (let y = 1; y < h - 1; y++) for (let xx = 1; xx < w - 1; xx++){
+      const i = y * w + xx;
+      if (!col[i]) continue;
+      const lap = Math.abs(4 * Y[i] - Y[i - 1] - Y[i + 1] - Y[i - w] - Y[i + w]);
+      m[i] = col[i] * (0.35 + 0.65 * clamp((lap - 0.015) / 0.06, 0, 1));
+    }
+    for (let i = 0; i < N; i++) m[i] = Math.min(1, m[i] * 1.6);
+    return maskCanvas(smoothMask(m, w, h), w, h);
+  }
+  // box-blur twice (edges clamped) so the displacement field has no tears where moving meets still
+  function smoothMask(m, w, h){
+    const rad = Math.max(1, Math.round(w * 0.006)), t = new Float32Array(w * h), n = 2 * rad + 1;
+    for (let pass = 0; pass < 2; pass++){
+      for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++){ let v = 0; for (let k = -rad; k <= rad; k++) v += m[y * w + clamp(xx + k, 0, w - 1)]; t[y * w + xx] = v / n; }
+      for (let y = 0; y < h; y++) for (let xx = 0; xx < w; xx++){ let v = 0; for (let k = -rad; k <= rad; k++) v += t[clamp(y + k, 0, h - 1) * w + xx]; m[y * w + xx] = v / n; }
+    }
+    return m;
+  }
+  function maskCanvas(m, w, h){
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d'), out = x.createImageData(w, h);
+    for (let i = 0; i < w * h; i++){ const v = Math.round(clamp(m[i], 0, 1) * 255); out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = v; out.data[i * 4 + 3] = 255; }
+    x.putImageData(out, 0, 0);
+    return c;
+  }
+  // a painted mask (white = may move): read its brightness, smooth the hard edges
+  function customMask(im){
+    const w = Math.min(1280, im.naturalWidth), h = Math.max(1, Math.round(im.naturalHeight * w / im.naturalWidth));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(im, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, m = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) m[i] = (0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]) / 255 * (d[i * 4 + 3] / 255);
+    return maskCanvas(smoothMask(m, w, h), w, h);
+  }
+  function loadCustomMask(){
+    const url = P.swayMask ? toURL(P.swayMask) : '';
+    if (url === SW.customUrl) return;
+    SW.customUrl = url; SW.custom = null; SW.maskKey = '';
+    if (!url) return;
+    const im = new Image();
+    im.onload = () => { if (SW.customUrl === url){ SW.custom = im; SW.maskKey = ''; rebuildSway(); } };
+    im.onerror = () => { SW.why = `Could not load motion mask "${P.swayMask}".`; notes(); };
+    im.src = url;
+  }
+  // after the composited image is (re)drawn: upload it and the screen-space mask
+  function rebuildSway(){
+    SW.ok = false; SW.why = '';
+    const want = active() && P.windSway > 0;
+    if (!want){ SW.cv.style.display = 'none'; if (active()) cv.style.display = ''; return; }
+    try {
+      const g = swayGL();
+      if (!g){ SW.why = 'WebGL2 unavailable for the sway layer.'; throw 0; }
+      loadCustomMask();
+      const key = B.url + '|' + effective() + '|' + (SW.custom ? SW.customUrl : 'auto');
+      if (SW.maskKey !== key){ SW.mask = SW.custom ? customMask(SW.custom) : autoMask(effective() === 'auto' ? B.cut : B.img); SW.maskKey = key; }
+      const W = cv.width, H = cv.height, r = coverRect(W, H);
+      const mc = document.createElement('canvas'); mc.width = Math.ceil(W / 2); mc.height = Math.ceil(H / 2);
+      const mx = mc.getContext('2d'); mx.fillStyle = '#000'; mx.fillRect(0, 0, mc.width, mc.height);
+      mx.drawImage(SW.mask, r.x / 2, r.y / 2, r.w / 2, r.h / 2);
+      SW.cv.width = W; SW.cv.height = H;
+      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, true); g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+      g.bindTexture(g.TEXTURE_2D, SW.tex); g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, cv);
+      g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      g.bindTexture(g.TEXTURE_2D, SW.mtex); g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, mc);
+      SW.ok = true;
+      SW.cv.style.display = ''; cv.style.display = 'none';
+    } catch (e){
+      if (!SW.why) SW.why = (e && e.name === 'SecurityError') ? 'Wind sway needs pixel access to the image, which is blocked here.' : 'Wind sway unavailable' + (e && e.message ? ': ' + e.message : '.');
+      SW.cv.style.display = 'none'; cv.style.display = '';
+    }
+    notes();
+  }
+  // every rendered frame
+  function sway(){
+    if (!SW.ok || !active()) return;
+    const g = SW.gl, w = Weather.surfaceWind(), sc = SW.cv.height / 1080;
+    const amp = (0.6 + 0.85 * Math.min(w.speed, 22)) * P.windSway * sc;   // px at 1080p: ~7 px in an 8 m/s breeze
+    g.viewport(0, 0, SW.cv.width, SW.cv.height);
+    g.useProgram(SW.prog);
+    g.activeTexture(g.TEXTURE0); g.bindTexture(g.TEXTURE_2D, SW.tex);
+    g.activeTexture(g.TEXTURE1); g.bindTexture(g.TEXTURE_2D, SW.mtex);
+    const u = n => g.getUniformLocation(SW.prog, n);
+    g.uniform1i(u('uImg'), 0); g.uniform1i(u('uMask'), 1);
+    g.uniform2f(u('uRes'), SW.cv.width, SW.cv.height);
+    g.uniform1f(u('uT'), typeof window.__swayT === 'number' ? window.__swayT : (performance.now() - SW.t0) / 1000);   // __swayT: preview/test clock
+    g.uniform1f(u('uAmp'), amp); g.uniform1f(u('uDirX'), w.dirX);
+    g.uniform1f(u('uGust'), clamp((w.gust - w.speed) / Math.max(w.speed, 1), 0, 1.5)); g.uniform1f(u('uSpeed'), w.speed);
+    g.clearColor(0, 0, 0, 0); g.clear(g.COLOR_BUFFER_BIT);
+    g.drawArrays(g.TRIANGLES, 0, 3);
+  }
+  function exportMask(){
+    if (!active()){ alert('Load an image first.'); return; }
+    let m;
+    try { m = SW.mask || autoMask(effective() === 'auto' ? B.cut : B.img); }
+    catch (e){ alert('Pixel access to the image is needed. Open index.html in a browser and choose the image with "Choose image…".'); return; }
+    m.toBlob(blob => {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+      a.download = (B.name.replace(/\.[^.]+$/, '') || 'background') + '-motion-mask.png'; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }, 'image/png');
   }
   function notes(){
     let n = '';
@@ -3138,6 +3313,7 @@ const Bg = (() => {
         else n = 'Everything above the Horizon line is replaced by sky.';
       }
     }
+    if (P.bgMode === 'Image' && B.img && P.windSway > 0) n += (n ? '\n' : '') + (SW.ok ? `Wind sway: ${SW.custom ? 'custom motion mask' : 'automatic motion mask'}.` : SW.why || '');
     setNote('bgnote', n);
   }
   const horizon = () => clamp(P.horizonAuto && B.autoH !== null && effective() !== 'horizon' ? B.autoH + 0.01 : P.horizon, 0.05, 0.98);
@@ -3202,7 +3378,7 @@ const Bg = (() => {
     }, 'image/png');
   }
   function onMode(){ resetHistory = true; if (P.bgMode === 'Image' && !B.img && !B.err) load(P.bgImage); else rebuild(); }
-  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, state: B};
+  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, state: B, swayState: SW};
 })();
 
 // ---- rain / snow / lightning overlay ------------------------------------------------------
