@@ -219,7 +219,8 @@ const SCHEMA = [
   {id:'letterbox',label:'Letterbox 2.39:1', type:'check', v:false},
   {sec:'Performance'},
   {id:'quality',  label:'Quality',     type:'select', options:['Low','Medium','High','Ultra'], v:'Medium'},
-  {id:'dynres',   label:'Dynamic resolution (GPU-timed, 60 fps)', type:'check', v:true},
+  {id:'dynres',   label:'Dynamic resolution (keeps within the GPU budget)', type:'check', v:true},
+  {id:'gpuBudget', label:'GPU budget', min:3, max:60, step:1, v:15, fmt:v=>Math.round(v)+'%'},
 ];
 const P = {};
 (function buildUI(){
@@ -297,7 +298,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','birds','birdAmt','traffic','roadsMask','viewHeight']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','birds','birdAmt','traffic','roadsMask','viewHeight']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2247,10 +2248,11 @@ function render(now){
   const useGpu = gtimes.length >= 10;
   const gavg = useGpu ? gtimes.reduce((a, b) => a + b, 0) / gtimes.length : 0;
   // GPU time leaves headroom for compositing/CPU; rAF time is the fallback when timer queries are missing
-  // budget scales with the frame cap so a wallpaper at 15-30 fps leaves the GPU mostly idle
+  // GPU budget: a share of the GPU's time (P.gpuBudget %), so a lower frame cap really means a lighter load.
+  // (It used to be a share of each frame, which kept the load the same at any frame rate.)
   const target = 1000 / Math.min(+P.fpsCap, 60);
   const cost = useGpu ? gavg : avg;
-  const hiT = useGpu ? Math.min(14, Math.max(6, target * 0.42)) : target * 1.12;
+  const hiT = useGpu ? Math.min(14, Math.max(1, target * P.gpuBudget / 100)) : target * 1.12;
   const loT = useGpu ? hiT * 0.82 : target * 1.02;
   if (P.dynres && now - lastDyn > 700 && (useGpu || ftimes.length >= 20)){
     let ns = S.volScale;

@@ -372,6 +372,14 @@
       "60"
     ]
   },
+  "gpuBudget": {
+    "type": "slider",
+    "value": 15,
+    "min": 3,
+    "max": 60,
+    "step": 1,
+    "text": "GPU budget (% of graphics card time the clouds may use; lower = lighter, slightly softer clouds)"
+  },
   "showPanel": {
     "type": "checkbox",
     "value": false,
