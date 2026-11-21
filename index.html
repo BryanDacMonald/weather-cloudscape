@@ -1245,9 +1245,9 @@ void marchClouds(vec3 W0, vec3 rd, float limit, float jit, out vec3 col, out flo
   vec3 ambBot = texelFetch(uIrr, ivec2(0, 0), 0).rgb * uAmbient * 0.55;
   // the ambient comes from a clear-sky model (blue); under a closing deck the light inside the cloud is multiply
   // scattered sunlight and the blue sky above is blocked, so it greys out (else overcast turns blue as the sun sinks)
-  float deck = smoothstep(0.5, 0.75, uCoverage) * 0.9;
-  ambTop = mix(ambTop, vec3(dot(ambTop, vec3(0.2126, 0.7152, 0.0722))) * vec3(1.0, 0.99, 0.97), deck);
-  ambBot = mix(ambBot, vec3(dot(ambBot, vec3(0.2126, 0.7152, 0.0722))) * vec3(1.0, 0.99, 0.97), deck);
+  float deck = smoothstep(0.5, 0.75, uCoverage) * 0.42;   // tuned to photos of a real overcast: cool grey, blue excess ~25/255
+  ambTop = mix(ambTop, vec3(dot(ambTop, vec3(0.2126, 0.7152, 0.0722))), deck);
+  ambBot = mix(ambBot, vec3(dot(ambBot, vec3(0.2126, 0.7152, 0.0722))), deck);
   float sigma = 45.0 * uCloudDensity;
   float powderW = 0.6 * saturate(0.5 - 0.5 * cosT) + 0.2;
   // mip selection from the pixel footprint (km per pixel at distance t), per texture
