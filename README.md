@@ -31,7 +31,7 @@ Use **Background = Image** and pick a file in the **Image** dropdown. If your fi
 How the sky gets replaced, from best to worst:
 
 1. **PNG with a transparent sky** (best). Cut the sky out in any editor: Photoshop's *Select → Sky*, GIMP's fuzzy select, Photopea (free, in-browser), or an AI background remover. Everything transparent becomes live sky. The included `images/sample-valley.png` is built this way.
-2. **Auto (detect sky)**. Flood-fills the bright, smooth, bluish or white region down from the top edge. It works well on clear daytime photos with a clean skyline. It struggles with night photos, fog, sky-coloured buildings and fine tree branches.
+2. **Auto (detect sky)**. Finds the bright, smooth, bluish or white region connected to the top edge, then refines the skyline at full resolution: soft edges, no leftover band of the photo's old sky, sharpening halos removed. It works well on daytime photos and AI-generated images with a plain sky and a clean skyline. Leave **Edge softening** low; it's only an extra. It can't handle photos with dense bare branches across the sky (use a hand-made cut-out for those), and struggles with night photos, fog and sky-coloured buildings.
    - **Catch:** browsers block reading pixels from local files when a page runs from disk. In Lively, auto-detection may be unavailable. If so, the wallpaper falls back to the horizon line and says so in the in-page panel. The workaround: open `index.html` in Chrome or Edge, press **H**, click **Choose image…**, check the result, then click **Save cut-out PNG** and use that PNG in Lively.
 3. **Horizon line**. Everything above a straight line becomes sky. Good for sea or flat-horizon photos.
 

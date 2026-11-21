@@ -104,7 +104,7 @@ const SCHEMA = [
   {id:'bgnote',   type:'note'},
   {id:'horizonAuto', label:'Auto horizon (from mask)', type:'check', v:true, on:()=>Bg.rebuild()},
   {id:'horizon',  label:'Horizon',     min:0.05, max:0.98, step:0.005, v:0.62, fmt:v=>Math.round(v*100)+'% down', on:()=>Bg.rebuild()},
-  {id:'feather',  label:'Edge soften', min:0,    max:1,   step:0.01, v:0.3,  fmt:f2, on:()=>Bg.rebuild()},
+  {id:'feather',  label:'Edge soften', min:0,    max:1,   step:0.01, v:0.1,  fmt:f2, on:()=>Bg.rebuild()},
   {id:'imgFov',   label:'Sky FOV',     min:20,   max:100, step:1,    v:55,   fmt:v=>Math.round(v)+'°'},
   {id:'relight',  label:'Relight image', min:0,  max:1,   step:0.01, v:0.85, fmt:f2},
   {id:'bgExport', label:'Save cut-out PNG', type:'button', on:()=>Bg.exportCutout()},
@@ -2731,7 +2731,7 @@ const Weather = (() => {
 const Bg = (() => {
   const cv = document.getElementById('fg'), ctx = cv.getContext('2d');
   const B = {img: null, url: '', name: '', err: '', w: 0, h: 0, alphaSky: null, autoSky: null, hasAlpha: false, tainted: false,
-             skyBottom: null, autoH: null, maskCanvas: null, maskKey: '', relightT: 0, relightKey: '', loadId: 0};
+             skyBottom: null, autoH: null, cut: null, cutData: null, cutSoft: null, cutKey: '', relightT: 0, relightKey: '', loadId: 0};
   const active = () => P.bgMode === 'Image' && !!B.img;
   function toURL(src){
     let s = String(src).replace(/\\/g, '/');
@@ -2772,7 +2772,7 @@ const Bg = (() => {
   function analyse(){
     const img = B.img, iw = img.naturalWidth, ih = img.naturalHeight;
     const w = Math.min(1024, iw), h = Math.max(1, Math.round(ih * w / iw));
-    B.w = w; B.h = h; B.alphaSky = B.autoSky = null; B.hasAlpha = false; B.tainted = false; B.maskKey = '';
+    B.w = w; B.h = h; B.alphaSky = B.autoSky = B.cut = B.cutData = null; B.hasAlpha = false; B.tainted = false;
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const x = c.getContext('2d', {willReadFrequently: true});
     x.drawImage(img, 0, 0, w, h);
@@ -2782,8 +2782,17 @@ const Bg = (() => {
     let tr = 0;
     for (let i = 0; i < N; i++) if (d[i * 4 + 3] < 128){ a[i] = 1; tr++; }
     B.hasAlpha = tr > N * 0.01;
-    if (B.hasAlpha) B.alphaSky = a;
-    else B.autoSky = detectSky(d, w, h);
+    if (B.hasAlpha){ B.alphaSky = a; return; }
+    B.autoSky = detectSky(d, w, h);
+    // refine the edges at full resolution (capped at ~6 MP) into a finished cut-out
+    const s = Math.min(1, 4096 / iw, Math.sqrt(6e6 / (iw * ih))), W = Math.round(iw * s), H = Math.round(ih * s);
+    const fc = document.createElement('canvas'); fc.width = W; fc.height = H;
+    const fx = fc.getContext('2d', {willReadFrequently: true});
+    fx.drawImage(img, 0, 0, W, H);
+    const out = refineSky(fx.getImageData(0, 0, W, H).data, W, H, B.autoSky, w, h);
+    if (!out){ B.autoSky = null; return; }
+    fx.putImageData(new ImageData(out, W, H), 0, 0);
+    B.cut = fc; B.cutData = out; B.cutKey = '';
   }
   // sky = smooth, bright or bluish region flood-filled down from the top edge
   let SKY_G = 0.16, SKY_TX = 0.012, SKY_CD = 24;
@@ -2860,12 +2869,147 @@ const Bg = (() => {
     for (let i = 0; i < N; i++) out[i] = out[i] ? 1 : 0;
     return out;
   }
+  // BEGIN REFINE (pure function, testable outside the page)
+  // Full-resolution edge refinement of the coarse sky mask from detectSky():
+  //  - sky colour estimated on a 32 px grid from confident sky (handles gradients and glow near the sun)
+  //  - in a band around the coarse boundary, soft alpha from each pixel's colour distance to that sky colour
+  //  - only sky connected to the confident region counts (sky-coloured water or walls below stay solid)
+  //  - light halo pixels from sharpening are faded, and the sky colour is unmixed from edge pixels
+  // d: RGBA bytes (W x H); core: coarse sky mask (cw x ch, 1 = sky). Returns RGBA bytes with the sky transparent.
+  function refineSky(d, W, H, core, cw, ch){
+    const N = W * H, fx = cw / W, fy = ch / H;
+    // coarse helpers: eroded core = sure sky, dilated core = refinement band limit (~12 px either side at full res)
+    const morph = (src, rad, grow) => {
+      let a = src;
+      for (let pass = 0; pass < 2; pass++){
+        const b = new Uint8Array(cw * ch);
+        for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++){
+          let v = grow ? 0 : 1;
+          for (let k = -rad; k <= rad; k++){
+            const xx = pass ? x : Math.min(cw - 1, Math.max(0, x + k)), yy = pass ? Math.min(ch - 1, Math.max(0, y + k)) : y;
+            const s = a[yy * cw + xx];
+            if (grow ? s : !s){ v = grow ? 1 : 0; break; }
+          }
+          b[y * cw + x] = v;
+        }
+        a = b;
+      }
+      return a;
+    };
+    const rc = Math.max(1, Math.ceil(12 * cw / W));
+    const sure = morph(core, rc, false), band = morph(core, rc, true);
+    const at = (m, x, y) => m[Math.min(ch - 1, (y * fy) | 0) * cw + Math.min(cw - 1, (x * fx) | 0)];
+    // sky colour grid (32 px cells); empty cells borrow from above, then below, then the mean of all
+    const C = 32, gw = Math.ceil(W / C), gh = Math.ceil(H / C), S = new Float32Array(gw * gh * 3);
+    function estimate(isSky){
+      const G = new Float32Array(gw * gh * 4);
+      for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2){
+        if (!isSky(x, y)) continue;
+        const g = ((y / C | 0) * gw + (x / C | 0)) * 4, i = (y * W + x) * 4;
+        G[g] += d[i]; G[g + 1] += d[i + 1]; G[g + 2] += d[i + 2]; G[g + 3]++;
+      }
+      let mr = 0, mg = 0, mb = 0, mn = 0;
+      for (let k = 0; k < gw * gh; k++) if (G[k * 4 + 3]){ mr += G[k * 4]; mg += G[k * 4 + 1]; mb += G[k * 4 + 2]; mn += G[k * 4 + 3]; }
+      if (!mn) return false;
+      for (let gx = 0; gx < gw; gx++){
+        let last = null;
+        for (let gy = 0; gy < gh; gy++){
+          const k = gy * gw + gx;
+          if (G[k * 4 + 3] >= 8) last = [G[k * 4] / G[k * 4 + 3], G[k * 4 + 1] / G[k * 4 + 3], G[k * 4 + 2] / G[k * 4 + 3]];
+          if (last) S.set(last, k * 3); else S[k * 3] = -1;
+        }
+        let first = null;
+        for (let gy = gh - 1; gy >= 0; gy--){ const k = gy * gw + gx; if (S[k * 3] >= 0) first = S.slice(k * 3, k * 3 + 3); else S.set(first || [mr / mn, mg / mn, mb / mn], k * 3); }
+      }
+      return true;
+    }
+    const skyAt = (x, y, o) => {                       // bilinear sky colour
+      const u = Math.max(0, Math.min(gw - 1.001, x / C - 0.5)), v = Math.max(0, Math.min(gh - 1.001, y / C - 0.5));
+      const x0 = u | 0, y0 = v | 0, tx = u - x0, ty = v - y0, x1 = Math.min(gw - 1, x0 + 1), y1 = Math.min(gh - 1, y0 + 1);
+      for (let c = 0; c < 3; c++){
+        const a = S[(y0 * gw + x0) * 3 + c], b = S[(y0 * gw + x1) * 3 + c], e = S[(y1 * gw + x0) * 3 + c], f = S[(y1 * gw + x1) * 3 + c];
+        o[c] = (a + (b - a) * tx) + ((e + (f - e) * tx) - (a + (b - a) * tx)) * ty;
+      }
+    };
+    const A = new Float32Array(N), Sk = new Float32Array(N * 3), dist = new Float32Array(N), inBand = new Uint8Array(N), o = [0, 0, 0];
+    for (let i = 0; i < N; i++) inBand[i] = at(band, i % W, (i / W) | 0);
+    const conn = new Uint8Array(N), q = new Int32Array(N);
+    {
+      if (!estimate((x, y) => at(sure, x, y))) return null;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++){
+        const i = y * W + x;
+        skyAt(x, y, o); Sk[i * 3] = o[0]; Sk[i * 3 + 1] = o[1]; Sk[i * 3 + 2] = o[2];
+        const dr = d[i * 4] - o[0], dg = d[i * 4 + 1] - o[1], db = d[i * 4 + 2] - o[2];
+        dist[i] = Math.sqrt(dr * dr + dg * dg + db * db) / 255;
+        A[i] = at(sure, x, y) ? 0 : Math.min(1, Math.max(0, (dist[i] - 0.035) / 0.10));
+      }
+      // keep only sky connected to the sure sky, and only within the band around the coarse edge
+      // (so hazy hills and sky-coloured water further away stay solid)
+      const ok = j => A[j] < 0.6 && inBand[j];
+      conn.fill(0); let qh = 0, qt = 0;
+      for (let i = 0; i < N; i++) if (A[i] < 0.6 && at(sure, i % W, (i / W) | 0)){ conn[i] = 1; q[qt++] = i; }
+      while (qh < qt){
+        const i = q[qh++], x = i % W;
+        const nb = [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W];
+        for (const j of nb) if (j >= 0 && j < N && !conn[j] && ok(j)){ conn[j] = 1; q[qt++] = j; }
+      }
+    }
+    // the soft edge may extend 2 px past connected sky; everything else is foreground
+    let near = conn;
+    for (let it = 0; it < 2; it++){
+      const nx = near.slice();
+      for (let i = 0; i < N; i++) if (near[i]){ const x = i % W; if (x > 0) nx[i - 1] = 1; if (x < W - 1) nx[i + 1] = 1; if (i >= W) nx[i - W] = 1; if (i + W < N) nx[i + W] = 1; }
+      near = nx;
+    }
+    // near the skyline, gaps in foliage that are clearly sky count as sky even when enclosed by leaves
+    for (let i = 0; i < N; i++) if (!near[i] && !(inBand[i] && A[i] < 0.35)) A[i] = 1;
+    // despeckle: a stray foreground pixel mostly surrounded by sky is noise
+    {
+      const sk = new Uint8Array(N); for (let i = 0; i < N; i++) sk[i] = A[i] < 0.5 ? 1 : 0;
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++){
+        const i = y * W + x;
+        if (sk[i] || !inBand[i]) continue;
+        const n = sk[i - 1] + sk[i + 1] + sk[i - W] + sk[i + W] + sk[i - W - 1] + sk[i - W + 1] + sk[i + W - 1] + sk[i + W + 1];
+        if (n >= 6) A[i] *= 0.2;
+      }
+    }
+    // sharpening halos: light, sky-ish pixels touching the sky are fringe, not foreground
+    for (let it = 0; it < 2; it++){
+      const sk = new Uint8Array(N); for (let i = 0; i < N; i++) sk[i] = A[i] < 0.5 ? 1 : 0;
+      for (let i = 0; i < N; i++){
+        if (sk[i] || !near[i]) continue;
+        const x = i % W;
+        if (!((x > 0 && sk[i - 1]) || (x < W - 1 && sk[i + 1]) || (i >= W && sk[i - W]) || (i + W < N && sk[i + W]))) continue;
+        const Y = 0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2];
+        const Ys = 0.2126 * Sk[i * 3] + 0.7152 * Sk[i * 3 + 1] + 0.0722 * Sk[i * 3 + 2];
+        if (Y > Ys * 0.72 && dist[i] < 0.22) A[i] *= 0.25;
+      }
+    }
+    // output: unmix the sky colour from partially transparent edge pixels
+    const out = new Uint8ClampedArray(N * 4);
+    for (let i = 0; i < N; i++){
+      let a = A[i];
+      if (a > 0 && a < 1){                               // an edge pixel as bright as the sky is sharpening halo
+        const Y = 0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2];
+        const Ys = 0.2126 * Sk[i * 3] + 0.7152 * Sk[i * 3 + 1] + 0.0722 * Sk[i * 3 + 2];
+        if (Y > Ys * 0.97 && dist[i] < 0.15) a *= 0.3;
+      }
+      if (a < 0.03) a = 0; else if (a > 0.97) a = 1;
+      if (a > 0 && a < 1){
+        const am = Math.max(a, 0.25);
+        for (let c = 0; c < 3; c++) out[i * 4 + c] = Math.min(d[i * 4 + c], (d[i * 4 + c] - (1 - am) * Sk[i * 3 + c]) / am);   // never brighten
+      } else { out[i * 4] = d[i * 4]; out[i * 4 + 1] = d[i * 4 + 1]; out[i * 4 + 2] = d[i * 4 + 2]; }
+      out[i * 4 + 3] = Math.round(a * 255);
+    }
+    return out;
+  }
+  // END REFINE
   // which mask is really in effect, given the setting and what the image allows
   function effective(){
     if (P.maskMode === 'Horizon line') return 'horizon';
     if (P.maskMode === 'Image transparency') return 'alpha';
     if (B.hasAlpha) return 'alpha';
-    if (B.autoSky) return 'auto';
+    if (B.autoSky && B.cut) return 'auto';
     return 'horizon';      // pixels unreadable
   }
   function skyBottomOf(sky){
@@ -2880,32 +3024,23 @@ const Bg = (() => {
     bottoms.sort((a, b) => a - b);
     return (bottoms[Math.floor(bottoms.length * 0.85)] + 1) / h;
   }
-  function maskCanvas(sky){
-    const r = Math.round(P.feather * 4 * B.w / 1024), key = B.url + '|' + r + '|' + effective();
-    if (B.maskKey === key) return B.maskCanvas;
-    const w = B.w, h = B.h;
-    let f = new Float32Array(w * h);
-    for (let i = 0; i < f.length; i++) f[i] = sky[i] ? 0 : 1;
-    // separable box blur x2 with clamped edges
-    const blur = (src, rad) => {
-      if (rad < 1) return src;
-      const tmp = new Float32Array(src.length), dst = new Float32Array(src.length), n = 2 * rad + 1;
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
-        let s = 0; for (let k = -rad; k <= rad; k++) s += src[y * w + clamp(x + k, 0, w - 1)]; tmp[y * w + x] = s / n;
-      }
-      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
-        let s = 0; for (let k = -rad; k <= rad; k++) s += tmp[clamp(y + k, 0, h - 1) * w + x]; dst[y * w + x] = s / n;
-      }
-      return dst;
-    };
-    f = blur(blur(f, r), r);
-    const c = B.maskCanvas || document.createElement('canvas');
-    c.width = w; c.height = h;
-    const x = c.getContext('2d'), id = x.createImageData(w, h);
-    for (let i = 0; i < f.length; i++) id.data[i * 4 + 3] = Math.round(clamp(f[i], 0, 1) * 255);
-    x.putImageData(id, 0, 0);
-    B.maskCanvas = c; B.maskKey = key;
-    return c;
+  // the refined cut-out, optionally with extra edge softening (alpha blur, clamped at the image borders)
+  function cutCanvas(){
+    const c = B.cut, W = c.width, H = c.height, rad = Math.round(P.feather * 4 * W / 1920);
+    if (rad < 1) return c;
+    const key = B.url + '|' + rad;
+    if (B.cutKey === key) return B.cutSoft;
+    const src = B.cutData, a = new Float32Array(W * H), t = new Float32Array(W * H), n = 2 * rad + 1;
+    for (let i = 0; i < W * H; i++) a[i] = src[i * 4 + 3];
+    for (let pass = 0; pass < 2; pass++){
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++){ let v = 0; for (let k = -rad; k <= rad; k++) v += a[y * W + clamp(x + k, 0, W - 1)]; t[y * W + x] = v / n; }
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++){ let v = 0; for (let k = -rad; k <= rad; k++) v += t[clamp(y + k, 0, H - 1) * W + x]; a[y * W + x] = v / n; }
+    }
+    const out = new Uint8ClampedArray(src); for (let i = 0; i < W * H; i++) out[i * 4 + 3] = a[i];
+    const c2 = B.cutSoft || document.createElement('canvas'); c2.width = W; c2.height = H;
+    c2.getContext('2d').putImageData(new ImageData(out, W, H), 0, 0);
+    B.cutSoft = c2; B.cutKey = key;
+    return c2;
   }
   function coverRect(W, H){
     const iw = B.img.naturalWidth, ih = B.img.naturalHeight, sc = Math.max(W / iw, H / ih);
@@ -2920,11 +3055,9 @@ const Bg = (() => {
     const r = coverRect(W, H), mode = effective();
     ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, W, H);
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(B.img, r.x, r.y, r.w, r.h);
+    ctx.drawImage(mode === 'auto' ? cutCanvas() : B.img, r.x, r.y, r.w, r.h);
     B.autoH = null;
     if (mode === 'auto'){
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.drawImage(maskCanvas(B.autoSky), r.x, r.y, r.w, r.h);
       const sb = skyBottomOf(B.autoSky); if (sb !== null) B.autoH = (r.y + sb * r.h) / H;
     } else if (mode === 'alpha'){
       const sb = skyBottomOf(B.alphaSky); if (sb !== null) B.autoH = (r.y + sb * r.h) / H;
@@ -2946,7 +3079,7 @@ const Bg = (() => {
         const m = effective();
         if (P.maskMode === 'Image transparency' && !B.hasAlpha && !B.tainted) n = 'This image has no transparent areas, so no sky will show. Use Auto, or a PNG with a transparent sky.';
         else if (m === 'alpha') n = `Using the image's transparency as the sky (${B.name}).`;
-        else if (m === 'auto') n = `Sky detected automatically (${B.name}). If edges are wrong, try "Save cut-out PNG" and fix it in an editor, or use a PNG with a transparent sky.`;
+        else if (m === 'auto') n = `Sky detected automatically (${B.name}). Photos with dense bare branches against the sky need a hand-made cut-out (a PNG with a transparent sky).`;
         else if (P.maskMode !== 'Horizon line' && B.tainted) n = 'Auto sky detection is blocked for local files here, so the Horizon line is used. For a proper skyline, use a PNG with a transparent sky (see README), or open index.html in a browser, choose the image there and click "Save cut-out PNG".';
         else n = 'Everything above the Horizon line is replaced by sky.';
       }
@@ -3008,13 +3141,7 @@ const Bg = (() => {
     if (!B.img){ alert('Load an image first.'); return; }
     const m = effective();
     if (m !== 'auto'){ alert(m === 'alpha' ? 'This image already has a transparent sky.' : 'Pixel access is needed to cut out the sky. Open index.html in a browser and choose the image with "Choose image…".'); return; }
-    const iw = B.img.naturalWidth, ih = B.img.naturalHeight, c = document.createElement('canvas');
-    c.width = iw; c.height = ih;
-    const x = c.getContext('2d');
-    x.drawImage(B.img, 0, 0);
-    x.globalCompositeOperation = 'destination-in'; x.imageSmoothingQuality = 'high';
-    x.drawImage(maskCanvas(B.autoSky), 0, 0, iw, ih);
-    c.toBlob(blob => {
+    cutCanvas().toBlob(blob => {
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
       a.download = (B.name.replace(/\.[^.]+$/, '') || 'background') + '-cutout.png'; a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
