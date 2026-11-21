@@ -218,6 +218,29 @@
     "step": 0.05,
     "text": "Star brightness"
   },
+  "aurora": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Northern lights (live NOAA geomagnetic activity)"
+  },
+  "auroraBright": {
+    "type": "slider",
+    "value": 1,
+    "min": 0,
+    "max": 3,
+    "step": 0.05,
+    "text": "Aurora brightness"
+  },
+  "iss": {
+    "type": "checkbox",
+    "value": true,
+    "text": "ISS passes (real orbit)"
+  },
+  "meteors": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Meteors (real shower dates and radiants)"
+  },
   "moonScale": {
     "type": "slider",
     "value": 1,
