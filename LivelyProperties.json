@@ -347,6 +347,14 @@
     "step": 0.05,
     "text": "Parallax: the view shifts as your mouse moves, like moving your head at a window (0 = off)"
   },
+  "nightDim": {
+    "type": "slider",
+    "value": 0.25,
+    "min": 0,
+    "max": 0.85,
+    "step": 0.05,
+    "text": "Night dimming: darken the whole wallpaper after dusk, for dark rooms (0 = off)"
+  },
   "sound": {
     "type": "checkbox",
     "value": false,

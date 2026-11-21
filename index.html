@@ -60,6 +60,7 @@ select option{background:#1a2030}
 <canvas id="fx"></canvas>
 <canvas id="glass" style="display:none"></canvas>
 <div id="flash"></div>
+<div id="nightdim" style="position:fixed;inset:0;background:#000;opacity:0;pointer-events:none;z-index:5"></div>
 <div id="wx"></div>
 <div id="ui" style="display:none"><header><span>☁ Weather Cloudscape</span><span id="stats"></span></header><div class="body" id="uibody"></div></div>
 <div id="msg">Generating cloud noise…</div>
@@ -150,6 +151,7 @@ const SCHEMA = [
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
+  {id:'nightDim', label:'Night dimming', min:0, max:0.85, step:0.05, v:0.25, fmt:v=>v ? Math.round(v*100)+'% darker' : 'off'},
   {id:'preset',   label:'Preset', type:'select', options:['Custom','Realistic','Calm','Light on the GPU'], v:'Custom', on:()=>applyPreset(P.preset)},
   {id:'adaptiveFps', label:'Adaptive frame rate (10 fps when nothing moves)', type:'check', v:true},
   {id:'showStatus', label:'Status panel (is everything working?)', type:'check', v:false},
@@ -305,7 +307,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','adaptiveFps','birds','birdAmt','traffic','roadsMask','viewHeight']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','adaptiveFps','nightDim','birds','birdAmt','traffic','roadsMask','viewHeight']);
 let saveTimer = 0, booted = false, hostBurst = true;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -558,6 +560,12 @@ float cloudBase(vec3 W, float h, vec2 wt, float lod){
   float hn = saturate((h - g.y) / max(g.w - g.y, 1e-3));
   float cov = wt.x * mix(1.0, 0.5, hn * hn);
   base = remap(base, 1.0 - cov, 1.0, 0.0, 1.0) * cov;
+  // a closing deck is never uniform: thicker and thinner patches a few km across read as darker and brighter areas
+  float deckT = smoothstep(0.7, 0.95, uCoverage);
+  if (deckT > 0.0){
+    float v = textureLod(uWeatherTex, (W.xz - uWind.xz * 0.6) / (WEATHER_SCALE * 0.22) + vec2(0.37, 0.61), 0.0).r;
+    base *= mix(1.0, 0.35 + 1.3 * v, deckT * 0.85);
+  }
   return saturate(base);
 }
 // fp = log2 of the pixel footprint in km (mip selection per octave).
@@ -2517,6 +2525,7 @@ function render(now){
   Parallax.step(dt);
   Sound.frame(dt);
   Status.update(L);
+  { const el = Math.asin(clamp(L[1], -1, 1)) / DEG, d = P.nightDim * smooth(-2, -10, el); const nd = document.getElementById('nightdim'); const v = d.toFixed(3); if (nd.style.opacity !== v) nd.style.opacity = v; }   // dim at night for dark rooms
   // is anything moving that needs a high frame rate? (clouds drift too slowly to need it)
   {
     const pr = Weather.precip(), wind = Weather.surfaceWind().speed;
@@ -2564,7 +2573,9 @@ function coverFromFraction(f, type){
     return tab[tab.length - 1][1];
   };
   const t = clamp((type - 0.2) / 0.6, 0, 1);   // blend between the two measured types
-  return lookup(COVER_CAL.stratus) * (1 - t) + lookup(COVER_CAL.cumulus) * t;
+  let v = lookup(COVER_CAL.stratus) * (1 - t) + lookup(COVER_CAL.cumulus) * t;
+  if (f > 0.97) v += (1 - v) * (f - 0.97) / 0.03;           // 100% means a closed deck: no slivers of blue near the horizon
+  return v;
 }
 
 // ---- solar position (NOAA-style low-precision formulae, ~0.1°) ---------------------
