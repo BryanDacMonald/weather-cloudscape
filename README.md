@@ -37,6 +37,10 @@ How the sky gets replaced, from best to worst:
 
 **Wind sway.** Trees and grass in your image move with the live wind: gusts roll across the scene in the real wind direction (relative to **View faces**), nearer vegetation moves more, and leaves flutter. Strength follows the measured wind and gusts; **Wind sway** scales it (0 = off). Which parts may move comes from a *motion mask*, made automatically from vegetation colour and texture. To control it, click **Save motion mask** (browser panel), paint it in any editor (white = sways, black = stays still, grey = a little), save it in the `images` folder and enter its file name in **Motion mask**. Hard edges are smoothed automatically.
 
+**Night lights.** At dusk, lights come on in the scene: windows switch on one by one at slightly different times, many go off late at night, and porch and street lamps stay on until dawn. Without a mask, lights are placed automatically on houses it can detect (light, colourless walls with straight edges). That's deliberately cautious, so it can miss houses half-hidden by trees. For full control, paint a **lights mask**: a black image the size of your picture with a white dot or patch wherever a light should be (each separate white spot is one light). Save it in `images` and enter its name in **Lights mask**.
+
+**Lightning** briefly lights up the whole landscape with a cold flash, as well as the sky.
+
 **Auto horizon** pitches the virtual camera so the rendered horizon lines up with the bottom of your photo's sky. **Sky FOV** should roughly match the photo's lens: about 40–60° for normal photos, wider for phone ultra-wide shots. **Relight image** dims, warms and cools the photo to match the time of day and cloud cover, so the foreground doesn't stay sunlit at night. Around sunrise and sunset it adds golden light (less under cloud), and when your view faces a low sun the foreground darkens as if backlit. Photos with soft daylight and slightly muted, late-summer colours take the evening tint best.
 
 ## How weather maps to the sky

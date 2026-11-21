@@ -10,7 +10,8 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 #c{position:fixed;inset:0}
 #c.interactive{cursor:grab}
 #c.drag{cursor:grabbing}
-#fg,#fgsway,#fx,#glass{position:fixed;inset:0;pointer-events:none}
+#fg,#fgsway,#fglights,#fx,#glass{position:fixed;inset:0;pointer-events:none}
+#fglights{mix-blend-mode:screen}
 #fg,#fgsway{filter:url(#relight)}
 #flash{position:fixed;inset:0;background:#dfe8ff;opacity:0;pointer-events:none;mix-blend-mode:screen}
 #wx{position:fixed;right:18px;top:14px;color:rgba(255,255,255,.82);font-size:13px;text-align:right;pointer-events:none;
@@ -50,6 +51,7 @@ select option{background:#1a2030}
 <canvas id="c"></canvas>
 <canvas id="fg"></canvas>
 <canvas id="fgsway" style="display:none"></canvas>
+<canvas id="fglights" style="display:none"></canvas>
 <canvas id="fx"></canvas>
 <canvas id="glass" style="display:none"></canvas>
 <div id="flash"></div>
@@ -112,6 +114,10 @@ const SCHEMA = [
   {id:'imgFov',   label:'Sky FOV',     min:20,   max:100, step:1,    v:55,   fmt:v=>Math.round(v)+'°'},
   {id:'relight',  label:'Relight image', min:0,  max:1,   step:0.01, v:0.85, fmt:f2},
   {id:'bgExport', label:'Save cut-out PNG', type:'button', on:()=>Bg.exportCutout()},
+  {id:'nightLights', label:'Night lights (windows, lamps)', type:'check', v:true, on:()=>Bg.rebuildLights()},
+  {id:'lightsMask', label:'Lights mask', type:'text', v:'', ph:'blank = automatic; or images/…-lights.png', on:()=>Bg.rebuildLights()},
+  {id:'lightsBright', label:'Light brightness', min:0, max:2, step:0.05, v:1, fmt:f2},
+  {id:'lightsSize', label:'Light size', min:0.5, max:3, step:0.05, v:1, fmt:f2},
   {id:'windSway', label:'Wind sway',   min:0,    max:3,   step:0.05, v:1, fmt:v=>v ? v.toFixed(2)+'×' : 'off', on:()=>Bg.rebuildSway()},
   {id:'swayMask', label:'Motion mask', type:'text', v:'', ph:'blank = automatic; or images/…-motion-mask.png', on:()=>Bg.rebuildSway()},
   {id:'swayExport', label:'Save motion mask', type:'button', on:()=>Bg.exportMask()},
@@ -273,7 +279,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2429,6 +2435,7 @@ function render(now){
   gpuTimerEnd(gpuQ);
   Bg.frame(L, Weather.overcast(), Sky.moonLight());
   Bg.sway();
+  Bg.lights(L, typeof window.__flashForce === 'number' ? window.__flashForce : Fx.flashEV / 2.2);   // __flashForce: test hook
   Glass.frame(dt);
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
@@ -3121,7 +3128,7 @@ const Bg = (() => {
   }
   function rebuild(){
     notes();
-    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; resetHistory = true; return; }
+    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; LT.cv.style.display = 'none'; resetHistory = true; return; }
     cv.style.display = '';
     const dpr = Math.min(devicePixelRatio || 1, 2), W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
     cv.width = W; cv.height = H;
@@ -3143,6 +3150,7 @@ const Bg = (() => {
     ctx.globalCompositeOperation = 'source-over';
     B.relightKey = '';
     rebuildSway();
+    rebuildLights();
   }
   // ---- wind sway: vegetation in the image moves with the live wind (a GPU layer over the composited image) ----
   // Motion mask (white = may move) is made in image space from vegetation colour + texture, or loaded from a file.
@@ -3306,6 +3314,134 @@ void main(){
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     }, 'image/png');
   }
+  // ---- night lights (windows, porch and street lamps) and lightning on the scene ----
+  // A painted 'lights' mask marks where light sources are (white = a light). Without one, lights are guessed:
+  // small, man-made-looking (still, non-vegetation) patches on buildings, which works for houses in daylight images.
+  const LT = {cv: document.getElementById('fglights'), mask: null, key: '', custom: null, customUrl: '', glow: null, spots: [], why: ''};
+  function loadLightsMask(){
+    const url = P.lightsMask ? toURL(P.lightsMask) : '';
+    if (url === LT.customUrl) return;
+    LT.customUrl = url; LT.custom = null; LT.key = '';
+    if (!url) return;
+    const im = new Image();
+    im.onload = () => { if (LT.customUrl === url){ LT.custom = im; LT.key = ''; rebuildLights(); } };
+    im.onerror = () => { LT.why = `Could not load lights mask "${P.lightsMask}".`; notes(); };
+    im.src = url;
+  }
+  // automatic guess: building pixels are still (not vegetation) and not sky; windows sit on them in rows.
+  function autoLights(src){
+    const w = Math.min(1280, src.width), h = Math.max(1, Math.round(src.height * w / src.width));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(src, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, N = w * h, bld = new Uint8Array(N);
+    for (let i = 0; i < N; i++){
+      const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2], a = d[i * 4 + 3];
+      if (a < 128) continue;
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), sat = mx ? (mx - mn) / mx : 0;
+      const green = g > r * 1.05 && g > b * 1.05, golden = r > b * 1.25 && g > b * 1.15 && sat > 0.22;
+      if (!green && !golden && sat < 0.16 && mx > 120) bld[i] = 1;  // light, nearly colourless: house walls, trim
+    }
+    // keep compact building blobs (not long thin roads/fences): label and test the shape
+    const lab = new Int32Array(N).fill(-1), q = new Int32Array(N), spots = [];
+    for (let s0 = 0; s0 < N; s0++){
+      if (!bld[s0] || lab[s0] >= 0) continue;
+      let qh = 0, qt = 0, x0 = w, x1 = 0, y0 = h, y1 = 0; q[qt++] = s0; lab[s0] = s0;
+      while (qh < qt){
+        const i = q[qh++], xx = i % w, yy = (i / w) | 0;
+        if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy;
+        for (const j of [xx > 0 ? i - 1 : -1, xx < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && bld[j] && lab[j] < 0){ lab[j] = s0; q[qt++] = j; }
+      }
+      const bw = x1 - x0 + 1, bh = y1 - y0 + 1, fill = qt / (bw * bh);
+      if (qt < 40 || qt > N * 0.01 || bw > w * 0.08 || bh > h * 0.06 || fill < 0.45 || bw / bh > 4 || bh / bw > 3) continue;
+      // man-made: a long straight horizontal edge (eave, roofline, sill) in or just above the blob
+      let straight = 0;
+      for (let yy = Math.max(1, y0 - 3); yy <= Math.min(h - 2, y1); yy++){
+        let run = 0, best = 0;
+        for (let xx = x0; xx <= x1; xx++){
+          const i = yy * w + xx, dy = Math.abs((d[i * 4] + d[i * 4 + 1]) - (d[(i + w) * 4] + d[(i + w) * 4 + 1]));
+          run = dy > 50 ? run + 1 : 0; if (run > best) best = run;
+        }
+        straight = Math.max(straight, best / bw);
+      }
+      if (straight < 0.45) continue;
+      if (y1 > h * 0.85) continue;                                  // foreground: not houses
+      // a house: two or three windows in its lower half, plus a porch light
+      const n = 2 + (qt > 200 ? 1 : 0);
+      for (let k = 0; k < n; k++) spots.push({x: (x0 + bw * (0.25 + 0.5 * k / Math.max(1, n - 1))) / w, y: (y0 + bh * 0.62) / h, r: Math.max(1.2, bw * 0.06) / w, warm: 1});
+      spots.push({x: (x0 + bw * 0.5) / w, y: (y0 + bh * 0.85) / h, r: Math.max(1, bw * 0.04) / w, warm: 0.8});
+    }
+    return spots;
+  }
+  function maskSpots(im){
+    const w = Math.min(1280, im.naturalWidth), h = Math.max(1, Math.round(im.naturalHeight * w / im.naturalWidth));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(im, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, N = w * h, on = new Uint8Array(N), lab = new Int32Array(N).fill(-1), q = new Int32Array(N), spots = [];
+    for (let i = 0; i < N; i++) on[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 > 128 && d[i * 4 + 3] > 128 ? 1 : 0;
+    for (let s0 = 0; s0 < N; s0++){
+      if (!on[s0] || lab[s0] >= 0) continue;
+      let qh = 0, qt = 0, sx = 0, sy = 0; q[qt++] = s0; lab[s0] = s0;
+      while (qh < qt){ const i = q[qh++], xx = i % w; sx += xx; sy += (i / w) | 0;
+        for (const j of [xx > 0 ? i - 1 : -1, xx < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && on[j] && lab[j] < 0){ lab[j] = s0; q[qt++] = j; } }
+      spots.push({x: sx / qt / w, y: sy / qt / h, r: Math.max(1, Math.sqrt(qt / Math.PI)) / w, warm: 1});
+      if (spots.length > 400) break;
+    }
+    return spots;
+  }
+  function rebuildLights(){
+    LT.why = '';
+    if (!active() || !P.nightLights){ LT.spots = []; return; }
+    loadLightsMask();
+    const key = B.url + '|' + (LT.custom ? LT.customUrl : 'auto');
+    if (LT.key === key) return;
+    try { LT.spots = LT.custom ? maskSpots(LT.custom) : autoLights(effective() === 'auto' ? B.cut : B.img); }
+    catch (e){ LT.spots = []; LT.why = 'Night lights need pixel access to the image.'; }
+    LT.key = key;
+    // each light gets its own on/off times and a slight colour variation (seeded, stable between reloads)
+    LT.spots.forEach((s, i) => { const h = Math.sin(i * 12.9898 + s.x * 78.233) * 43758.5453, f = h - Math.floor(h);
+      s.on = f; s.off = 21.5 + 3.5 * ((f * 7.31) % 1); s.alwaysOn = s.warm < 0.9 || f > 0.85; s.tint = f; });
+  }
+  // per frame: draw the glows (additive) and lightning flash on the foreground
+  function lights(L, flash){
+    const cvs = LT.cv, x = cvs.getContext('2d');
+    const el = Math.asin(clamp(L[1], -1, 1)) / DEG, dark = smooth(2, -6, el);
+    const want = active() && ((P.nightLights && dark > 0.01 && LT.spots.length) || flash > 0.01);
+    if (!want){ if (cvs.style.display !== 'none'){ cvs.style.display = 'none'; } return; }
+    cvs.style.display = '';
+    const W = cv.width, H = cv.height;
+    if (cvs.width !== W || cvs.height !== H){ cvs.width = W; cvs.height = H; }
+    x.clearRect(0, 0, W, H);
+    const r = coverRect(W, H);
+    if (flash > 0.01){                                              // cold flash over the whole foreground
+      x.globalCompositeOperation = 'source-over';
+      x.globalAlpha = Math.min(0.55, flash * 0.5);
+      x.drawImage(SW.ok ? SW.cv : cv, 0, 0);
+      x.globalCompositeOperation = 'source-atop';
+      x.fillStyle = 'rgba(190,205,255,0.85)'; x.fillRect(0, 0, W, H);
+      x.globalAlpha = 1;
+    }
+    if (P.nightLights && dark > 0.01){
+      const now = new Date(), hr = now.getHours() + now.getMinutes() / 60;
+      x.globalCompositeOperation = 'lighter';
+      const k = r.w / (B.w ? 1 : 1);
+      for (const s of LT.spots){
+        // windows switch on through dusk (each at its own time) and many go off late at night; porch/street lamps stay on
+        const onAt = s.on * 0.8;
+        let lvl = smooth(onAt, onAt + 0.15, dark);
+        if (!s.alwaysOn){ const late = hr >= 12 ? hr : hr + 24; lvl *= late > s.off ? 0 : 1; if (hr > 5 && hr < 12) lvl *= smooth(1, 0.3, dark); }
+        if (lvl <= 0) continue;
+        const px = r.x + s.x * r.w, py = r.y + s.y * r.h, rad = Math.max(1.5, s.r * r.w) * P.lightsSize;
+        const warmC = s.tint > 0.5 ? '255,196,120' : '255,214,160';
+        const g = x.createRadialGradient(px, py, 0, px, py, rad * 6);
+        g.addColorStop(0, `rgba(${warmC},${(0.95 * lvl * P.lightsBright).toFixed(3)})`);
+        g.addColorStop(0.12, `rgba(${warmC},${(0.55 * lvl * P.lightsBright).toFixed(3)})`);
+        g.addColorStop(0.4, `rgba(${warmC},${(0.08 * lvl * P.lightsBright).toFixed(3)})`);
+        g.addColorStop(1, `rgba(${warmC},0)`);
+        x.fillStyle = g; x.fillRect(px - rad * 6, py - rad * 6, rad * 12, rad * 12);
+      }
+      x.globalCompositeOperation = 'source-over';
+    }
+  }
   function notes(){
     let n = '';
     if (P.bgMode === 'Image'){
@@ -3385,7 +3521,7 @@ void main(){
     }, 'image/png');
   }
   function onMode(){ resetHistory = true; if (P.bgMode === 'Image' && !B.img && !B.err) load(P.bgImage); else rebuild(); }
-  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, state: B, swayState: SW};
+  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, lights, rebuildLights, state: B, swayState: SW, lightState: LT};
 })();
 
 // ---- rain / snow / lightning overlay ------------------------------------------------------

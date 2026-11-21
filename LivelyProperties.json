@@ -154,6 +154,32 @@
     "value": "",
     "text": "Motion mask file in the images folder (blank = automatic), e.g. meadow-motion-mask.png"
   },
+  "nightLights": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Night lights in windows and lamps"
+  },
+  "lightsMask": {
+    "type": "textbox",
+    "value": "",
+    "text": "Lights mask file in the images folder (blank = automatic: lights on detected houses)"
+  },
+  "lightsBright": {
+    "type": "slider",
+    "value": 1,
+    "min": 0,
+    "max": 2,
+    "step": 0.05,
+    "text": "Night light brightness"
+  },
+  "lightsSize": {
+    "type": "slider",
+    "value": 1,
+    "min": 0.5,
+    "max": 3,
+    "step": 0.05,
+    "text": "Night light size"
+  },
   "lblSky": {
     "type": "label",
     "value": "Night sky"
