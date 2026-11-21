@@ -2250,7 +2250,7 @@ function duskExposure(L){
   const t = (x, a, b) => { const u = Math.max(0, Math.min(1, (x - a) / (b - a))); return u * u * (3 - 2 * u); };
   return 1 - 0.6 * t(el, -8, -2) * (1 - t(el, 4, 16));
 }
-const VERSION = '2.4.0';   // keep in step with LivelyInfo.json and the GitHub release tag
+const VERSION = '2.4.1';   // keep in step with LivelyInfo.json and the GitHub release tag
 const STAT = {fps: 0, gpuMs: null, timer: false, vol: [0, 0], idle: false};
 const DEG = Math.PI / 180, HOME_YAW = 295.83 * DEG, HOME_PITCH = 3.95 * DEG, HOME_POS = [-8.5514, 0.8047, -3.4189];
 function render(now){
@@ -3214,10 +3214,11 @@ const Bg = (() => {
         const Ys = 0.2126 * Sk[i * 3] + 0.7152 * Sk[i * 3 + 1] + 0.0722 * Sk[i * 3 + 2];
         if (Y > Ys * 0.97 && dist[i] < 0.15) a *= 0.3;
       }
-      if (a < 0.03) a = 0; else if (a > 0.97) a = 1;
+      a = a * a * (3 - 2 * a);                           // tighter edge: fewer half-sky pixels
+      if (a < 0.04) a = 0; else if (a > 0.96) a = 1;
       if (a > 0 && a < 1){
-        const am = Math.max(a, 0.25);
-        for (let c = 0; c < 3; c++) out[i * 4 + c] = Math.min(d[i * 4 + c], (d[i * 4 + c] - (1 - am) * Sk[i * 3 + c]) / am);   // never brighten
+        const am = Math.max(a, 0.25), dk = 0.55 + 0.45 * a; // edge pixels carry daylight from the photo's sky: darken them
+        for (let c = 0; c < 3; c++) out[i * 4 + c] = dk * Math.min(d[i * 4 + c], (d[i * 4 + c] - (1 - am) * Sk[i * 3 + c]) / am);   // never brighten
       } else { out[i * 4] = d[i * 4]; out[i * 4 + 1] = d[i * 4 + 1]; out[i * 4 + 2] = d[i * 4 + 2]; }
       out[i * 4 + 3] = Math.round(a * 255);
     }
@@ -3289,6 +3290,12 @@ const Bg = (() => {
       ctx.globalCompositeOperation = 'destination-in'; ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     }
     ctx.globalCompositeOperation = 'source-over';
+    try {
+      const pc = document.createElement('canvas'); pc.width = 64; pc.height = 36; const px = pc.getContext('2d', {willReadFrequently: true}); px.drawImage(cv, 0, 0, 64, 36);
+      const d = px.getImageData(0, 0, 64, 36).data; let Y = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 200){ Y += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
+      B.fgMeanY = n ? Y / n / 255 : 0.4;
+    } catch (e){ B.fgMeanY = 0.4; }
     B.relightKey = '';
     rebuildSway();
     rebuildLights();
@@ -3830,7 +3837,19 @@ void main(){
     let r = lum * (1 + 0.10 * warm), g = lum * (1 - 0.20 * warm), b = lum * (1 - 0.48 * warm);
     r *= 1 - 0.35 * (1 - day); g *= 1 - 0.2 * (1 - day);          // moonlit blue
     b *= 1 + 0.06 * oc * day;                                        // overcast: slightly cool
-    const k = P.relight, M = [r, g, b].map(v => Math.pow(Math.max(v, 1e-4), k).toFixed(3));   // blend in log space so night stays dark
+    // the land can't be brighter than the sky that lights it: measure the rendered sky and cap the photo to ~0.6 of it
+    // (display brightness; the filter works in linear light, hence the 2.2 power)
+    let cap = 1;
+    try {
+      const sc = B.skyProbe || (B.skyProbe = Object.assign(document.createElement('canvas'), {width: 32, height: 18}));
+      const sx = sc.getContext('2d', {willReadFrequently: true}); sx.drawImage(canvas, 0, 0, 32, 18);
+      const d = sx.getImageData(0, 1, 32, Math.max(1, Math.round(18 * horizon() * 0.6))).data; let Y = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4){ Y += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]; n++; }
+      const skyY = Y / n / 255, imgY = B.fgMeanY || 0.4;
+      B.skyY = skyY;
+      cap = Math.pow(clamp(0.62 * skyY / imgY, 0.02, 1), 2.2);
+    } catch (e){}
+    const k = P.relight, M = [r, g, b].map(v => Math.pow(Math.max(Math.min(v, cap), 1e-4), k).toFixed(3));   // blend in log space so night stays dark
     const key = M.join();
     if (key === B.relightKey) return;
     B.relightKey = key;
