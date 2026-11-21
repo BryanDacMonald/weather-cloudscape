@@ -159,6 +159,40 @@
     "value": "",
     "text": "Motion mask file in the images folder (blank = automatic), e.g. meadow-motion-mask.png"
   },
+  "birds": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Birds (by season, time of day and weather; migrating geese spring and fall)"
+  },
+  "birdAmt": {
+    "type": "slider",
+    "value": 1,
+    "min": 0,
+    "max": 3,
+    "step": 0.05,
+    "text": "Bird activity"
+  },
+  "traffic": {
+    "type": "slider",
+    "value": 1,
+    "min": 0,
+    "max": 4,
+    "step": 0.05,
+    "text": "Traffic (1 = typical quiet street; 0 = off)"
+  },
+  "roadsMask": {
+    "type": "textbox",
+    "value": "",
+    "text": "Roads mask file in the images folder (red = road you can see, blue = road hidden behind something)"
+  },
+  "viewHeight": {
+    "type": "slider",
+    "value": 16,
+    "min": 1.5,
+    "max": 80,
+    "step": 0.5,
+    "text": "Viewpoint height in metres (sizes the cars; raise it if cars look too big)"
+  },
   "nightLights": {
     "type": "checkbox",
     "value": true,

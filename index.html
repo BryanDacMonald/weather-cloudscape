@@ -10,9 +10,9 @@ canvas{display:block;width:100vw;height:100vh;touch-action:none}
 #c{position:fixed;inset:0}
 #c.interactive{cursor:grab}
 #c.drag{cursor:grabbing}
-#fg,#fgsway,#fglights,#fgfog,#fx,#glass{position:fixed;inset:0;pointer-events:none}
-#fglights{mix-blend-mode:screen}
-#fgfog{filter:url(#relight)}
+#fg,#fgsway,#fglights,#fgfog,#fx,#glass,#birds,#fgcars,#fgcarlights{position:fixed;inset:0;pointer-events:none}
+#fglights,#fgcarlights{mix-blend-mode:screen}
+#fgfog,#fgcars{filter:url(#relight)}
 #fg,#fgsway{filter:url(#relight)}
 #flash{position:fixed;inset:0;background:#dfe8ff;opacity:0;pointer-events:none;mix-blend-mode:screen}
 #wx{position:fixed;right:18px;top:14px;color:rgba(255,255,255,.82);font-size:13px;text-align:right;pointer-events:none;
@@ -50,9 +50,12 @@ select option{background:#1a2030}
 <svg width="0" height="0" style="position:absolute"><filter id="relight" color-interpolation-filters="linearRGB">
   <feColorMatrix id="relightM" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"/></filter></svg>
 <canvas id="c"></canvas>
+<canvas id="birds" style="display:none"></canvas>
 <canvas id="fg"></canvas>
 <canvas id="fgsway" style="display:none"></canvas>
+<canvas id="fgcars" style="display:none"></canvas>
 <canvas id="fglights" style="display:none"></canvas>
+<canvas id="fgcarlights" style="display:none"></canvas>
 <canvas id="fgfog" style="display:none"></canvas>
 <canvas id="fx"></canvas>
 <canvas id="glass" style="display:none"></canvas>
@@ -117,6 +120,11 @@ const SCHEMA = [
   {id:'imgFov',   label:'Sky FOV',     min:20,   max:100, step:1,    v:55,   fmt:v=>Math.round(v)+'°'},
   {id:'relight',  label:'Relight image', min:0,  max:1,   step:0.01, v:0.85, fmt:f2},
   {id:'bgExport', label:'Save cut-out PNG', type:'button', on:()=>Bg.exportCutout()},
+  {id:'birds',    label:'Birds', type:'check', v:true},
+  {id:'birdAmt',  label:'Bird activity', min:0, max:3, step:0.05, v:1, fmt:f2},
+  {id:'traffic',  label:'Traffic (cars per hour ×)', min:0, max:4, step:0.05, v:1, fmt:v=>v ? v.toFixed(2)+'×' : 'off', on:()=>Bg.rebuildRoads()},
+  {id:'viewHeight', label:'Viewpoint height', min:1.5, max:80, step:0.5, v:16, fmt:v=>v.toFixed(1)+' m'},
+  {id:'roadsMask', label:'Roads mask', type:'text', v:'', ph:'images/…-roads.png (red = road, blue = hidden)', on:()=>Bg.rebuildRoads()},
   {id:'nightLights', label:'Night lights (windows, lamps)', type:'check', v:true, on:()=>Bg.rebuildLights()},
   {id:'lightsMask', label:'Lights mask', type:'text', v:'', ph:'blank = automatic; or images/…-lights.png', on:()=>Bg.rebuildLights()},
   {id:'lightsBright', label:'Light brightness', min:0, max:2, step:0.05, v:1, fmt:f2},
@@ -289,7 +297,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','birds','birdAmt','traffic','roadsMask','viewHeight']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2484,6 +2492,8 @@ function render(now){
   Bg.sway();
   Bg.lights(L, typeof window.__flashForce === 'number' ? window.__flashForce : Fx.flashEV / 2.2);   // __flashForce: test hook
   Bg.groundFog(dt);
+  Bg.traffic(dt, L);
+  Birds.frame(dt, L);
   if (frame % 60 === 0) Bg.groundTick();
   Glass.frame(dt);
   Parallax.step(dt);
@@ -3212,7 +3222,7 @@ const Bg = (() => {
   }
   function rebuild(){
     notes();
-    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; LT.cv.style.display = 'none'; document.getElementById('fgfog').style.display = 'none'; resetHistory = true; return; }
+    if (!active()){ cv.style.display = 'none'; SW.cv.style.display = 'none'; LT.cv.style.display = 'none'; TR.cv.style.display = 'none'; TR.lcv.style.display = 'none'; document.getElementById('fgfog').style.display = 'none'; resetHistory = true; return; }
     cv.style.display = '';
     const dpr = Math.min(devicePixelRatio || 1, 2), W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
     cv.width = W; cv.height = H;
@@ -3236,6 +3246,7 @@ const Bg = (() => {
     B.relightKey = '';
     rebuildSway();
     rebuildLights();
+    rebuildRoads();
   }
   // ---- wind sway: vegetation in the image moves with the live wind (a GPU layer over the composited image) ----
   // Motion mask (white = may move) is made in image space from vegetation colour + texture, or loaded from a file.
@@ -3596,6 +3607,145 @@ void main(){
     x.globalAlpha = 1;
   }
   function groundTick(){ if (active() && P.groundFx !== undefined && groundKey() !== GR.key) rebuild(); }
+  // ---- traffic: cars along roads traced in a roads mask (red = visible road, blue = hidden behind something) ----
+  // The painted width is the road's width, which sizes the cars correctly at every point (perspective for free).
+  const TR = {cv: document.getElementById('fgcars'), lcv: document.getElementById('fgcarlights'), roads: [], cars: [], key: '', custom: null, customUrl: '', why: '', nextT: []};
+  function loadRoadsMask(){
+    const url = P.roadsMask ? toURL(P.roadsMask) : '';
+    if (url === TR.customUrl) return;
+    TR.customUrl = url; TR.custom = null; TR.key = ''; TR.roads = [];
+    if (!url) return;
+    const im = new Image();
+    im.onload = () => { if (TR.customUrl === url){ TR.custom = im; TR.key = ''; rebuildRoads(); } };
+    im.onerror = () => { TR.why = `Could not load roads mask "${P.roadsMask}".`; notes(); };
+    im.src = url;
+  }
+  // mask -> polylines in image fractions: each connected red/blue stroke is one road, ordered along its main axis
+  function parseRoads(im){
+    const w = Math.min(2000, im.naturalWidth), h = Math.max(1, Math.round(im.naturalHeight * w / im.naturalWidth));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(im, 0, 0, w, h);
+    const d = x.getImageData(0, 0, w, h).data, N = w * h, kind = new Uint8Array(N);
+    for (let i = 0; i < N; i++){ const r = d[i * 4], b = d[i * 4 + 2], g = d[i * 4 + 1]; if (r > 128 && g < 110 && b < 110) kind[i] = 1; else if (b > 128 && r < 110 && g < 140) kind[i] = 2; }
+    const lab = new Int32Array(N).fill(-1), q = new Int32Array(N), roads = [];
+    for (let s0 = 0; s0 < N; s0++){
+      if (!kind[s0] || lab[s0] >= 0) continue;
+      let qh = 0, qt = 0; q[qt++] = s0; lab[s0] = s0;
+      while (qh < qt){ const i = q[qh++], xx = i % w;
+        for (const j of [xx > 0 ? i - 1 : -1, xx < w - 1 ? i + 1 : -1, i - w, i + w, i - w - 1, i - w + 1, i + w - 1, i + w + 1]) if (j >= 0 && j < N && kind[j] && lab[j] < 0){ lab[j] = s0; q[qt++] = j; } }
+      if (qt < 20) continue;
+      // principal axis
+      let mx = 0, my = 0; for (let k = 0; k < qt; k++){ mx += q[k] % w; my += (q[k] / w) | 0; } mx /= qt; my /= qt;
+      let sxx = 0, syy = 0, sxy = 0; for (let k = 0; k < qt; k++){ const dx = q[k] % w - mx, dy = ((q[k] / w) | 0) - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; }
+      const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy), ax = Math.cos(ang), ay = Math.sin(ang);
+      // bins along the axis: centre, width (pixels across), visible share
+      const proj = k => (q[k] % w - mx) * ax + (((q[k] / w) | 0) - my) * ay;
+      let pmin = 1e9, pmax = -1e9; for (let k = 0; k < qt; k++){ const p = proj(k); if (p < pmin) pmin = p; if (p > pmax) pmax = p; }
+      const step = 4, nb = Math.max(2, Math.ceil((pmax - pmin) / step) + 1), B = Array.from({length: nb}, () => ({x: 0, y: 0, n: 0, red: 0}));
+      for (let k = 0; k < qt; k++){ const bi = Math.min(nb - 1, Math.floor((proj(k) - pmin) / step)), b = B[bi]; b.x += q[k] % w; b.y += (q[k] / w) | 0; b.n++; if (kind[q[k]] === 1) b.red++; }
+      let pts = B.filter(b => b.n).map(b => ({x: b.x / b.n / w, y: b.y / b.n / h, wd: Math.max(1.5, b.n / step) / w, vis: b.red / b.n > 0.5}));
+      // smooth the measured width along the road (single bins are noisy)
+      pts = pts.map((p, i) => { let s2 = 0, n2 = 0; for (let k = Math.max(0, i - 3); k <= Math.min(pts.length - 1, i + 3); k++){ s2 += pts[k].wd; n2++; } return {...p, wd: s2 / n2}; });
+      if (pts.length >= 3) roads.push(pts);
+    }
+    return roads;
+  }
+  function rebuildRoads(){
+    TR.why = '';
+    if (!active() || !P.traffic){ TR.roads = []; TR.cars = []; return; }
+    loadRoadsMask();
+    if (!TR.custom){ TR.roads = []; return; }
+    const key = B.url + '|' + TR.customUrl; if (TR.key === key) return;
+    try { TR.roads = parseRoads(TR.custom); } catch (e){ TR.roads = []; TR.why = 'The roads mask needs pixel access.'; }
+    TR.key = key; TR.cars = []; TR.nextT = TR.roads.map(() => performance.now() + 3000 + Math.random() * 20000);
+    // cumulative length in image px (for even speed)
+    for (const r of TR.roads){ let s = 0; r[0].s = 0; for (let i = 1; i < r.length; i++){ s += Math.hypot(r[i].x - r[i - 1].x, (r[i].y - r[i - 1].y) * B.h / B.w); r[i].s = s; } r.len = s; }
+  }
+  const CAR_COLOURS = [[235,235,232,25],[28,30,34,20],[150,152,156,18],[195,197,200,12],[40,60,110,9],[150,25,30,9],[90,95,100,5],[70,90,70,2]];
+  function pickColour(){ let t = Math.random() * 100; for (const c of CAR_COLOURS){ t -= c[3]; if (t <= 0) return c; } return CAR_COLOURS[0]; }
+  function rateNow(){ const h = new Date().getHours(); return [.4,.3,.2,.2,.4,2,6,14,12,7,6,6,7,7,8,11,13,12,8,6,5,4,2,1][h]; }   // cars per hour per road
+  function along(r, s){                                               // position, tangent, width and visibility at distance s
+    let i = 1; while (i < r.length - 1 && r[i].s < s) i++;
+    const a = r[i - 1], b = r[i], f = Math.max(0, Math.min(1, (s - a.s) / Math.max(1e-9, b.s - a.s)));
+    return {x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, tx: b.x - a.x, ty: (b.y - a.y), wd: a.wd + (b.wd - a.wd) * f, vis: f < 0.5 ? a.vis : b.vis};
+  }
+  function traffic(dt, L){
+    const cvs = TR.cv, lc = TR.lcv;
+    if (!active() || !P.traffic || !TR.roads.length){ cvs.style.display = lc.style.display = 'none'; return; }
+    const W = cv.width, H = cv.height;
+    for (const c of [cvs, lc]) if (c.width !== W || c.height !== H){ c.width = W; c.height = H; }
+    const now = performance.now(), r0 = coverRect(W, H), dark = smooth(4, -4, Math.asin(clamp(L[1], -1, 1)) / DEG);
+    const hz = horizon() * H, fpx = H / 2 / Math.tan(P.imgFov * DEG / 2);   // horizon row and focal length in screen px
+    // spawn
+    TR.roads.forEach((r, ri) => {
+      if (now < TR.nextT[ri]) return;
+      const rate = rateNow() * P.traffic * (window.__trafficBoost || 1);
+      TR.nextT[ri] = now + (-Math.log(Math.random()) * 3600 / Math.max(rate, 0.01)) * 1000;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      if (TR.cars.some(c => c.road === ri && c.dir === dir && (dir > 0 ? c.s : r.len - c.s) < 0.03)) return;   // keep a gap
+      const col = pickColour();
+      TR.cars.push({road: ri, dir, s: dir > 0 ? 0 : r.len, v: (10 + Math.random() * 5) * (P.trafficSpeed || 1), col, len: 4.3 + Math.random() * 1.2, born: now});
+      if (window.Sound) Sound.carPass && Sound.carPass(r.len, dir);
+    });
+    const x = cvs.getContext('2d'), lx = lc.getContext('2d');
+    x.clearRect(0, 0, W, H); lx.clearRect(0, 0, W, H);
+    let any = false, anyL = false;
+    for (let k = TR.cars.length - 1; k >= 0; k--){
+      const c = TR.cars[k], r = TR.roads[c.road];
+      let p = along(r, c.s);
+      // perspective on flat ground: f*tan(depression) = pixels below the horizon, and distance = height / tan(depression),
+      // so pixels per metre across the view = (pixels below horizon) / viewpoint height; depth is squashed by tan(depression)
+      // td is floored: real scenes have hillsides facing you, which foreshorten far less than flat ground would
+      const ppmAt = q => { const py0 = r0.y + q.y * r0.h, dy = Math.max(2, py0 - hz); return {ppm: dy / Math.max(2, P.viewHeight), td: Math.max(0.3, dy / fpx)}; };
+      const g0 = ppmAt(p), tl0 = Math.hypot(p.tx * r0.w, p.ty * r0.h) || 1, ca = p.tx * r0.w / tl0, sa = p.ty * r0.h / tl0;
+      const ppmAlong = g0.ppm / Math.sqrt(ca * ca + (sa / g0.td) ** 2);
+      c.s += c.dir * c.v * ppmAlong / r0.w * dt;                       // s is in image widths
+      if (c.s < -0.01 || c.s > r.len + 0.01){ TR.cars.splice(k, 1); continue; }
+      p = along(r, c.s);
+      if (!p.vis) continue;
+      const px = r0.x + p.x * r0.w, py = r0.y + p.y * r0.h;
+      const g = ppmAt(p), tl = Math.hypot(p.tx * r0.w, p.ty * r0.h) || 1, ux = c.dir * p.tx * r0.w / tl, uy = c.dir * p.ty * r0.h / tl;   // travel direction on screen
+      // a car's screen length: full when crossing the view, squashed by tan(depression) when heading toward or away
+      const mPerPx = Math.hypot(ux / g.ppm, uy / (g.ppm * g.td));      // ground metres per screen pixel along the travel direction
+      const len = Math.max(2, c.len / mPerPx);
+      const Hh = Math.max(1.2, 1.45 * g.ppm);                          // ~1.45 m tall
+      // draw: a small side-view silhouette in the scene's haze, slightly soft like the photo
+      const [cr0, cg0, cb0] = c.col, hz2 = 0.25;                       // pull colour toward the road/air tone
+      const cr = cr0 + (170 - cr0) * hz2, cg = cg0 + (165 - cg0) * hz2, cb = cb0 + (150 - cb0) * hz2;
+      const sh = (k) => `rgb(${(cr * k) | 0},${(cg * k) | 0},${(cb * k) | 0})`;
+      x.save(); x.translate(px, py); x.rotate(ux >= 0 ? Math.atan2(uy, ux) * 0.7 : Math.atan2(-uy, -ux) * 0.7);
+      x.filter = `blur(${Math.max(0.35, len * 0.03).toFixed(2)}px)`;
+      const L2 = len / 2, h = Hh, end = Math.max(1, Math.min(len, h * 1.2));   // end-on cars show at least their width
+      const half = Math.max(L2, end / 2);
+      x.fillStyle = 'rgba(0,0,0,0.3)'; x.beginPath(); x.ellipse(0, 0, half * 1.05, Math.max(0.6, h * 0.16), 0, 0, 6.283); x.fill();   // contact shadow
+      x.fillStyle = sh(0.62); x.fillRect(-half, -h * 0.5, half * 2, h * 0.32);             // lower body (in shade)
+      x.fillStyle = sh(1.0);  x.fillRect(-half, -h * 0.62, half * 2, h * 0.16);            // upper body catching skylight
+      x.fillStyle = sh(0.95); x.fillRect(-half * 0.62, -h * 0.98, half * 1.24, h * 0.38);  // cabin
+      x.fillStyle = 'rgba(40,48,60,0.9)'; x.fillRect(-half * 0.55, -h * 0.92, half * 1.1, h * 0.26);   // windows
+      x.fillStyle = 'rgba(190,205,220,0.35)'; x.fillRect(-half * 0.55, -h * 0.92, half * 1.1, Math.max(0.4, h * 0.07));   // sky in the glass
+      x.fillStyle = 'rgb(20,20,22)';                                                       // wheels
+      for (const wxp of [-half * 0.62, half * 0.62]){ x.beginPath(); x.ellipse(wxp, -h * 0.16, Math.max(0.6, h * 0.17), Math.max(0.6, h * 0.17), 0, 0, 6.283); x.fill(); }
+      x.restore();
+      any = true;
+      if (dark > 0.05){                                               // headlights ahead, tail lights behind
+        const fx = px + ux * len * 0.5, fy = py - Hh * 0.45 + uy * len * 0.5, bx = px - ux * len * 0.5, by = py - Hh * 0.45 - uy * len * 0.5;
+        const toward = Math.max(0.15, uy);                              // headlights pointing at you are brighter
+        const core = Math.max(1.2, Hh * 0.3), halo = core * 4;
+        const g = lx.createRadialGradient(fx, fy, 0, fx, fy, halo);
+        g.addColorStop(0, `rgba(255,250,235,${(0.95 * dark).toFixed(3)})`); g.addColorStop(0.25, `rgba(255,244,220,${(0.35 * dark * (0.5 + toward)).toFixed(3)})`); g.addColorStop(1, 'rgba(255,240,210,0)');
+        lx.fillStyle = g; lx.fillRect(fx - halo, fy - halo, halo * 2, halo * 2);
+        const bmx = fx + ux * len * 1.6, bmy = fy + Hh * 0.4 + uy * len * 1.6, bmr = len * 1.4;   // pool of light on the road ahead
+        const bm = lx.createRadialGradient(bmx, bmy, 0, bmx, bmy, bmr);
+        bm.addColorStop(0, `rgba(255,240,210,${(0.12 * dark).toFixed(3)})`); bm.addColorStop(1, 'rgba(255,240,210,0)');
+        lx.fillStyle = bm; lx.fillRect(bmx - bmr, bmy - bmr, bmr * 2, bmr * 2);
+        const tc = Math.max(1, Hh * 0.22), th = tc * 3, tg = lx.createRadialGradient(bx, by, 0, bx, by, th);
+        tg.addColorStop(0, `rgba(255,45,35,${(0.85 * dark).toFixed(3)})`); tg.addColorStop(0.3, `rgba(255,30,20,${(0.25 * dark).toFixed(3)})`); tg.addColorStop(1, 'rgba(255,30,20,0)');
+        lx.fillStyle = tg; lx.fillRect(bx - th, by - th, th * 2, th * 2);
+        anyL = true;
+      }
+    }
+    cvs.style.display = any ? '' : 'none'; lc.style.display = anyL ? '' : 'none';
+  }
   function notes(){
     let n = '';
     if (P.bgMode === 'Image'){
@@ -3675,7 +3825,7 @@ void main(){
     }, 'image/png');
   }
   function onMode(){ resetHistory = true; if (P.bgMode === 'Image' && !B.img && !B.err) load(P.bgImage); else rebuild(); }
-  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, lights, rebuildLights, groundFog, groundTick, state: B, swayState: SW, lightState: LT};
+  return {active, load, rebuild, horizon, frame, pick, exportCutout, onMode, sway, rebuildSway, exportMask, lights, rebuildLights, groundFog, groundTick, traffic, rebuildRoads, trafficState: TR, state: B, swayState: SW, lightState: LT};
 })();
 
 // ---- rain / snow / lightning overlay ------------------------------------------------------
@@ -4434,7 +4584,7 @@ const Parallax = (() => {
   addEventListener('pointermove', e => {
     PX.tx = (e.clientX / innerWidth) * 2 - 1; PX.ty = (e.clientY / innerHeight) * 2 - 1; PX.lastMove = performance.now();
   }, {passive: true});
-  const sky = () => [canvas], fg = () => ['fg', 'fgsway', 'fglights', 'fgfog'].map(id => document.getElementById(id));
+  const sky = () => [canvas, document.getElementById('birds')], fg = () => ['fg', 'fgsway', 'fglights', 'fgfog', 'fgcars', 'fgcarlights'].map(id => document.getElementById(id));
   function step(dt){
     const k = P.parallax;
     const idle = performance.now() - PX.lastMove > 20000;
@@ -4573,7 +4723,127 @@ const Sound = (() => {
   }
   // browsers allow sound only after a click: resume on the first one
   addEventListener('pointerdown', () => { if (SD.ctx && P.sound) SD.ctx.resume().catch(() => {}); }, {passive: true});
-  return {frame, build, tick, thunder, state: SD};
+  // a distant car passing: a soft tyre-and-engine swell that pans across
+  function carPass(lenFrac, dir){
+    if (!P.sound || !SD.ctx || SD.ctx.state !== 'running') return;
+    const n = SD.nodes, c = n.ctx, t = c.currentTime, dur = 6 + lenFrac * 20;
+    const s = c.createBufferSource(); s.buffer = n.brown; s.loop = true;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 420 + Math.random() * 200; bp.Q.value = 0.8;
+    const g = c.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + dur * 0.5); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const pn = c.createStereoPanner ? c.createStereoPanner() : null;
+    s.connect(bp); bp.connect(g);
+    if (pn){ pn.pan.setValueAtTime(-0.7 * dir, t); pn.pan.linearRampToValueAtTime(0.7 * dir, t + dur); g.connect(pn); pn.connect(n.comp); } else g.connect(n.comp);
+    s.start(t, Math.random() * 3); s.stop(t + dur + 0.1);
+  }
+  // geese honking as a skein passes (nasal, two-note, irregular)
+  function honk(dur){
+    if (!P.sound || !SD.ctx || SD.ctx.state !== 'running') return;
+    const n = SD.nodes, c = n.ctx, t0 = c.currentTime;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 2.5;
+    const out = c.createGain(); out.gain.value = 0.05; bp.connect(out); out.connect(n.comp);
+    for (let t = t0 + Math.random(); t < t0 + dur; t += 0.25 + Math.random() * 0.9){
+      const o = c.createOscillator(), g = c.createGain(), f = 330 + Math.random() * 90, d = 0.1 + Math.random() * 0.08;
+      o.type = 'sawtooth'; o.frequency.setValueAtTime(f, t); o.frequency.linearRampToValueAtTime(f * 1.12, t + d * 0.4); o.frequency.linearRampToValueAtTime(f * 0.95, t + d);
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(1, t + 0.015); g.gain.linearRampToValueAtTime(0, t + d);
+      o.connect(g); g.connect(bp); o.start(t); o.stop(t + d + 0.02);
+    }
+  }
+  return {frame, build, tick, thunder, carPass, honk, state: SD};
+})();
+
+// ---- birds: distant silhouettes crossing the sky, by season, time of day and weather ----------------------------
+const Birds = (() => {
+  const BD = {cv: document.getElementById('birds'), groups: [], next: 0, lastLog: ''};
+  // what's flying now, per hour
+  function rates(L){
+    const now = new Date(), mo = now.getMonth() + 1, el = Math.asin(clamp(L[1], -1, 1)) / DEG;
+    if (el < -5) return null;
+    const pr = Weather.precip(), wind = Weather.surfaceWind().speed, cover = Weather.overcast();
+    const rain = pr ? pr.rain + pr.snow : 0;
+    const weather = (rain > 0.4 ? 0.1 : rain > 0.1 ? 0.4 : 1) * (wind > 14 ? 0.3 : wind > 9 ? 0.65 : 1);
+    const dawnDusk = Math.max(Math.exp(-(((el - 6) / 8) ** 2)), 0.35);   // busiest in the low-sun hours
+    const season = [0.35, 0.35, 0.6, 1, 1.2, 1.2, 1.1, 1, 1, 0.8, 0.55, 0.4][mo - 1];
+    const migrating = (mo >= 3 && mo <= 4) || (mo >= 9 && mo <= 11);
+    return {
+      songbirds: 14 * season * dawnDusk * weather, crow: 6 * weather * (0.5 + 0.5 * dawnDusk),
+      geese: migrating ? 3.5 * weather * (el > 0 ? 1 : 0.5) : 0.4 * weather,
+      hawk: (mo >= 3 && mo <= 10 && el > 15 && cover < 0.6 && wind < 9 && rain === 0) ? 2.5 : 0,
+      north: mo <= 6,                                                  // spring migration heads north, autumn south
+    };
+  }
+  function spawn(kind, W, H, hz, scale, north){
+    const fromLeft = Math.random() < 0.5;
+    const g = {kind, birds: [], t: 0, age: 0};
+    const yTop = H * 0.06, yBot = hz - H * 0.03, y = yTop + Math.random() * (yBot - yTop) * (kind === 'hawk' ? 0.6 : kind === 'songbirds' ? 1 : 0.85);
+    const depth = 0.4 + Math.random() * 0.8;                          // how far: smaller and paler when distant
+    let n = 1, speed, span, flap;
+    if (kind === 'songbirds'){ n = 4 + Math.floor(Math.random() * 12); span = 3.2; speed = 95; flap = 11; }
+    else if (kind === 'crow'){ n = Math.random() < 0.25 ? 2 : 1; span = 8; speed = 60; flap = 3.4; }
+    else if (kind === 'geese'){ n = 7 + Math.floor(Math.random() * 18); span = 10; speed = 55; flap = 2.6; }
+    else { span = 11; speed = 18; flap = 0; }
+    span *= scale * depth; speed *= scale * depth * (0.8 + Math.random() * 0.4);
+    let vx = (fromLeft ? 1 : -1) * speed, vy = (Math.random() - 0.5) * speed * 0.12;
+    if (kind === 'geese'){                                            // heading follows the migration direction, relative to the view
+      const head = (north ? 0 : 180) + (Math.random() - 0.5) * 50, rel = Math.sin((head - P.viewBearing) * DEG);
+      vx = (Math.abs(rel) < 0.25 ? (rel < 0 ? -0.25 : 0.25) : rel) * speed * 1.4;
+    }
+    const x0 = vx > 0 ? -span * 6 : W + span * 6;
+    for (let i = 0; i < n; i++){
+      let ox = 0, oy = 0;
+      if (kind === 'geese'){ const k = Math.ceil(i / 2), side = i % 2 ? 1 : -1; ox = -Math.sign(vx) * k * span * 1.1; oy = side * k * span * 0.55 * (0.9 + Math.random() * 0.2); }
+      else if (kind === 'songbirds'){ ox = (Math.random() - 0.5) * span * 14; oy = (Math.random() - 0.5) * span * 5; }
+      else if (kind === 'crow' && i){ ox = -Math.sign(vx) * span * (3 + Math.random() * 4); oy = (Math.random() - 0.5) * span * 2; }
+      g.birds.push({x: x0 + ox, y: y + oy, ph: Math.random() * 6.28, f: flap * (0.9 + Math.random() * 0.2), span: span * (0.85 + Math.random() * 0.3), jx: Math.random() * 6.28});
+    }
+    Object.assign(g, {vx, vy, depth, span, cx: x0, cy: y, r: span * (4 + Math.random() * 3), ang: Math.random() * 6.28, life: kind === 'hawk' ? 60 + Math.random() * 60 : 1e9});
+    BD.groups.push(g);
+    if (kind === 'geese' && window.Sound && Sound.honk) Sound.honk(8 + Math.random() * 10);
+  }
+  function frame(dt, L){
+    const c = BD.cv;
+    if (!P.birds){ if (BD.groups.length){ BD.groups = []; c.style.display = 'none'; } return; }
+    const W = Math.round(innerWidth * Math.min(devicePixelRatio || 1, 2)), H = Math.round(innerHeight * Math.min(devicePixelRatio || 1, 2));
+    if (c.width !== W || c.height !== H){ c.width = W; c.height = H; }
+    const hz = (Bg.active() ? Bg.horizon() : 0.62) * H, scale = H / 1080, rt = rates(L), now = performance.now();
+    if (rt && now > BD.next){
+      BD.next = now + 1000;
+      for (const k of ['songbirds', 'crow', 'geese', 'hawk']) if (Math.random() < rt[k] * P.birdAmt * (window.__birdBoost || 1) / 3600) spawn(k, W, H, hz, scale, rt.north);
+    }
+    const x = c.getContext('2d');
+    x.clearRect(0, 0, W, H);
+    const wx = Weather.surfaceWind().dirX * Math.min(Weather.surfaceWind().speed, 15) * scale * 0.6;
+    for (let gi = BD.groups.length - 1; gi >= 0; gi--){
+      const g = BD.groups[gi]; g.t += dt; g.age += dt;
+      let alive = false;
+      const alpha = 0.92 - 0.35 * (1.2 - g.depth);
+      x.strokeStyle = `rgba(22,22,26,${alpha.toFixed(2)})`; x.lineCap = 'round'; x.lineJoin = 'round';
+      for (const b of g.birds){
+        if (g.kind === 'hawk'){
+          g.ang += dt * 0.25 / g.birds.length; g.cx += (g.vx * 0.3 + wx * 0.3) * dt / g.birds.length;
+          b.x = g.cx + Math.cos(g.ang) * g.r; b.y = g.cy + Math.sin(g.ang) * g.r * 0.35 - g.age * 0.6 * scale;
+          b.ph = Math.sin(g.t * 0.7) * 0.15;                            // soaring: wings held, gently rocking
+        } else {
+          let fl = 1;
+          if (g.kind === 'songbirds'){ const cyc = (g.t * 1.6 + b.jx) % 1; fl = cyc < 0.45 ? 1 : 0; b.y += Math.sin((g.t * 1.6 + b.jx) * 6.28) * 6 * scale * dt; }   // bounding flight
+          b.x += (g.vx + wx) * dt; b.y += g.vy * dt + Math.sin(g.t * 0.8 + b.jx) * 2 * scale * dt;
+          b.ph += b.f * 6.28 * dt * fl;
+          if (!fl) b.ph = b.ph * 0.9;                                   // glide: wings folded-ish
+        }
+        if (b.x > -b.span * 30 && b.x < W + b.span * 30 && g.age < g.life) alive = true;
+        // silhouette: wings as a shallow M that flaps
+        const s = b.span, flapY = (g.kind === 'hawk' ? b.ph : Math.sin(b.ph)) * s * 0.32;
+        x.lineWidth = Math.max(0.8, s * 0.09);
+        x.beginPath();
+        x.moveTo(b.x - s / 2, b.y - flapY);
+        x.quadraticCurveTo(b.x - s * 0.22, b.y - s * 0.1 - flapY * 0.35, b.x, b.y);
+        x.quadraticCurveTo(b.x + s * 0.22, b.y - s * 0.1 - flapY * 0.35, b.x + s / 2, b.y - flapY);
+        x.stroke();
+      }
+      if (!alive) BD.groups.splice(gi, 1);
+    }
+    c.style.display = BD.groups.length ? '' : 'none';
+  }
+  return {frame, spawn, state: BD};
 })();
 
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------
