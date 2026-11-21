@@ -61,6 +61,16 @@ Every 15 minutes the wallpaper reads Open-Meteo's *current* conditions for your 
 - **No true cirrus.** High wispy cloud is drawn as a thin, translucent high layer.
 - **One cloud layer at a time.** When several layers are reported, the dominant one is drawn.
 
+## The window glass
+
+The wallpaper behaves like a pane of glass you look through:
+
+- **Raindrops** land on the glass when it rains, refracting the scene behind them like tiny lenses. Some grow heavy and run down, leaving trails of droplets. More rain reaches the glass when the wind blows toward your window (from the direction in **View faces**). After the rain stops, the drops slowly evaporate over about 25 minutes.
+- **Condensation** mists the glass on cool, near-saturated days (dew point close to the temperature).
+- **Frost** creeps in from the edges and corners when it's below freezing and humid.
+
+**Glass effects** sets the strength (0 = off).
+
 ## The night sky
 
 With live weather on, the night sky is the real one for your location and time:
