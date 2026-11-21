@@ -4244,8 +4244,12 @@ void main(){
     catch (e){ G2.fgTaint = true; G2.hasBack = false; }                     // image pixels unreadable: drops without refraction
     g.generateMipmap(g.TEXTURE_2D);
     // scene brightness for highlights, from the middle of the backdrop
-    let lum = 0.3;
-    try { const px = bx.getImageData(bw >> 1, bh >> 2, 1, 1).data; lum = (px[0] * 0.2 + px[1] * 0.7 + px[2] * 0.1) / 255; } catch (e){}
+    // scene brightness for highlights: a pixel readback stalls the GPU, so only every 2 s
+    if (!(performance.now() - (G2.lumT || 0) < 2000)){
+      G2.lumT = performance.now();
+      try { const px = bx.getImageData(bw >> 1, bh >> 2, 1, 1).data; G2.lum = (px[0] * 0.2 + px[1] * 0.7 + px[2] * 0.1) / 255; } catch (e){ G2.lum = 0.3; }
+    }
+    const lum = G2.lum ?? 0.3;
     g.viewport(0, 0, W, H); g.useProgram(G2.prog);
     g.activeTexture(g.TEXTURE0); g.bindTexture(g.TEXTURE_2D, G2.tex);
     const u = G2.u;
