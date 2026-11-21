@@ -1611,7 +1611,7 @@ const FS_FINAL = HEADER + COMMON + `
 in vec2 vUV;
 uniform sampler2D uComp, uBloom, uVol0, uSceneDepth;
 uniform vec2 uRes, uLowSize;
-uniform float uAspect, uDistort, uCA, uVignette, uContrast, uSharpen, uBloomI, uFlare, uEV, uLetterbox, uFrame;
+uniform float uAspect, uDistort, uCA, uVignette, uContrast, uSharpen, uBloomI, uFlare, uEV, uLetterbox, uFrame, uExpScale;
 uniform vec3 uSunScreen;
 out vec4 o;
 
@@ -1684,7 +1684,7 @@ void main(){
   vec3 E = texelFetch(uIrr, ivec2(0, 0), 0).rgb * PI
          + uSunIllum * transmittanceToSun(vec3(0.0, Rg + 0.3, 0.0), uSunDir) * max(uSunDir.y, 0.0) * mix(1.0, 0.35, uCoverage);
   float lum = dot(E, vec3(0.2126, 0.7152, 0.0722));
-  float exposure = min(2.8 / pow(max(lum, 1e-5), 0.78), 60.0) * exp2(uEV);
+  float exposure = min(2.8 / pow(max(lum, 1e-5), 0.78), 60.0) * exp2(uEV) * uExpScale;
 
   vec2 pv = vUV - 0.5;
   float vr = dot(pv, pv) * 2.0;
@@ -2101,6 +2101,13 @@ function gpuTimerBegin(){
 }
 function gpuTimerEnd(q){ if (q){ gl.endQuery(tq.TIME_ELAPSED_EXT); tqPending.push(q); } }
 
+// auto-exposure brightens a low-sun scene almost to midday levels, which washes the sky out; around
+// sunset and into twilight let it be up to ~1 stop darker, as the eye and a camera see it. Day and night unchanged.
+function duskExposure(L){
+  const el = Math.asin(Math.max(-1, Math.min(1, L[1]))) * 180 / Math.PI;
+  const t = (x, a, b) => { const u = Math.max(0, Math.min(1, (x - a) / (b - a))); return u * u * (3 - 2 * u); };
+  return 1 - 0.6 * t(el, -8, -2) * (1 - t(el, 4, 16));
+}
 const DEG = Math.PI / 180, HOME_YAW = 295.83 * DEG, HOME_PITCH = 3.95 * DEG, HOME_POS = [-8.5514, 0.8047, -3.4189];
 function render(now){
   // wallpaper frame cap: skip vsyncs until the next frame is due (small slack so 30 on 60 Hz hits every 2nd vsync)
@@ -2356,7 +2363,7 @@ function render(now){
     // image mode: no lens distortion / vignette, so the sky stays aligned with the photo
     uRes: [S.W, S.H], uLowSize: S.low, uAspect: aspect, uDistort: imageMode ? 0 : P.distort, uCA: imageMode ? 0 : P.ca, uVignette: imageMode ? 0 : P.vignette,
     uContrast: P.contrast, uSharpen: P.sharpen, uBloomI: P.bloom * 0.12, uFlare: P.flare, uEV: P.ev + Fx.flashEV, uLetterbox: P.letterbox ? 1 : 0,
-    uFrame: frame, uSunScreen: sunScreen,
+    uFrame: frame, uSunScreen: sunScreen, uExpScale: duskExposure(L),
   });
 
   gpuTimerEnd(gpuQ);
@@ -2955,8 +2962,15 @@ const Bg = (() => {
     B.relightT = now;
     const el = Math.asin(clamp(L[1], -1, 1)) / DEG;
     const day = smooth(-9, 5, el), low = (1 - smooth(1, 18, el)) * day, oc = clamp(overcast, 0, 1);
-    const lum = (0.04 + 0.06 * moon * (1 - oc) * (1 - day) + 0.96 * day) * (1 - 0.45 * oc * day);
-    let r = lum * (1 + 0.04 * low), g = lum * (1 - 0.16 * low), b = lum * (1 - 0.36 * low);
+    const sunLow = low * (1 - 0.75 * oc);                            // clouds block the low sun's colour
+    // backlight: facing a low sun, the near side of everything is in shadow (as in a photo taken toward sunset)
+    const hz = Math.hypot(L[0], L[2]) || 1;
+    const facing = Math.max(0, (L[0] * Math.sin(HOME_YAW) + L[2] * Math.cos(HOME_YAW)) / hz);
+    const back = facing * facing * sunLow;
+    const lum = (0.04 + 0.06 * moon * (1 - oc) * (1 - day) + 0.96 * day) * (1 - 0.45 * oc * day)
+              * (1 - 0.22 * sunLow) * (1 - 0.7 * back);               // evening light is weaker; backlit is darker
+    const warm = sunLow * (1 - 0.5 * back);                          // backlit: less of the warm direct light
+    let r = lum * (1 + 0.10 * warm), g = lum * (1 - 0.20 * warm), b = lum * (1 - 0.48 * warm);
     r *= 1 - 0.35 * (1 - day); g *= 1 - 0.2 * (1 - day);          // moonlit blue
     b *= 1 + 0.06 * oc * day;                                        // overcast: slightly cool
     const k = P.relight, M = [r, g, b].map(v => Math.pow(Math.max(v, 1e-4), k).toFixed(3));   // blend in log space so night stays dark
