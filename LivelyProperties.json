@@ -1,4 +1,19 @@
 {
+  "lblStart": {
+    "type": "label",
+    "value": "Quick start"
+  },
+  "preset": {
+    "type": "dropdown",
+    "value": 0,
+    "text": "Preset (sets many options at once; adjust any afterwards)",
+    "items": [
+      "Custom",
+      "Realistic",
+      "Calm",
+      "Light on the GPU"
+    ]
+  },
   "lblWeather": {
     "type": "label",
     "value": "Live weather"
@@ -379,6 +394,11 @@
     "max": 60,
     "step": 1,
     "text": "GPU budget (% of graphics card time the clouds may use; lower = lighter, slightly softer clouds)"
+  },
+  "adaptiveFps": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Adaptive frame rate: drop to 10 fps when nothing is moving"
   },
   "showPanel": {
     "type": "checkbox",

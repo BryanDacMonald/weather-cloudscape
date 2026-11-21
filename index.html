@@ -150,6 +150,8 @@ const SCHEMA = [
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
+  {id:'preset',   label:'Preset', type:'select', options:['Custom','Realistic','Calm','Light on the GPU'], v:'Custom', on:()=>applyPreset(P.preset)},
+  {id:'adaptiveFps', label:'Adaptive frame rate (10 fps when nothing moves)', type:'check', v:true},
   {id:'showStatus', label:'Status panel (is everything working?)', type:'check', v:false},
   {id:'keepSettings', label:'Keep my settings when reinstalling', type:'check', v:true},
   {id:'checkUpdates', label:'Check GitHub for updates (once a day)', type:'check', v:true},
@@ -303,7 +305,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','birds','birdAmt','traffic','roadsMask','viewHeight']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels','gpuBudget','windSway','swayMask','glass','glassAmt','nightLights','lightsMask','lightsBright','lightsSize','groundFx','aurora','auroraBright','iss','meteors','parallax','sound','soundVol','showStatus','checkUpdates','adaptiveFps','birds','birdAmt','traffic','roadsMask','viewHeight']);
 let saveTimer = 0, booted = false, hostBurst = true;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2242,7 +2244,8 @@ const STAT = {fps: 0, gpuMs: null, timer: false, vol: [0, 0], idle: false};
 const DEG = Math.PI / 180, HOME_YAW = 295.83 * DEG, HOME_PITCH = 3.95 * DEG, HOME_POS = [-8.5514, 0.8047, -3.4189];
 function render(now){
   // wallpaper frame cap: skip vsyncs until the next frame is due (small slack so 30 on 60 Hz hits every 2nd vsync)
-  if (now - lastT < 1000 / +P.fpsCap - 3){ requestAnimationFrame(render); return; }
+  const capNow = P.adaptiveFps && STAT.idle ? Math.min(+P.fpsCap, 10) : +P.fpsCap;   // adaptive: slow down when nothing moves
+  if (now - lastT < 1000 / capNow - 3){ requestAnimationFrame(render); return; }
   const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
   const q = QUALITY[P.quality];
   const imageMode = Bg.active();
@@ -2514,6 +2517,16 @@ function render(now){
   Parallax.step(dt);
   Sound.frame(dt);
   Status.update(L);
+  // is anything moving that needs a high frame rate? (clouds drift too slowly to need it)
+  {
+    const pr = Weather.precip(), wind = Weather.surfaceWind().speed;
+    STAT.idle = !(
+      (P.precip && pr && (pr.rain > 0.02 || pr.snow > 0.02 || pr.thunder)) ||
+      (P.glass && document.getElementById('glass').style.display !== 'none' && Glass.state.wet > 0.3 && pr && pr.rain > 0.02) ||
+      Birds.state.groups.length || (Bg.trafficState.cars.length && P.traffic > 0) || Space.state.meteors.length || Fx.flashEV > 0 ||
+      performance.now() - Parallax.state.lastMove < 3000 ||
+      (Bg.active() && P.windSway > 0 && wind > 5) || P.interactive);
+  }
   prevVP = VP; prevEye = eye.slice(); frame++;
   if (now - statsT > 500){
     fpsShown = 1000 / avg; statsT = now;
@@ -4884,6 +4897,20 @@ const Updates = (() => {
   }
   return {check, state: U};
 })();
+
+// ---- presets: a starting point; any setting can still be changed afterwards ----------------------------------
+const PRESETS = {
+  'Realistic':        {quality: 'Medium', fpsCap: '30', gpuBudget: 15, adaptiveFps: true, windSway: 1, glass: true, glassAmt: 1, birds: true, birdAmt: 1,
+                       traffic: 1, flights: true, parallax: 0.6, precip: true, groundFx: true, nightLights: true, aurora: true, iss: true, meteors: true},
+  'Calm':             {quality: 'Medium', fpsCap: '30', gpuBudget: 15, adaptiveFps: true, windSway: 0.6, glass: true, glassAmt: 0.7, birds: true, birdAmt: 0.5,
+                       traffic: 0, flights: true, parallax: 0, sound: false, precip: true, meteors: true},
+  'Light on the GPU': {quality: 'Low', fpsCap: '20', gpuBudget: 8, adaptiveFps: true, windSway: 0.7, glass: true, glassAmt: 0.8, birds: true, birdAmt: 1,
+                       traffic: 1, flights: true, parallax: 0.4},
+};
+function applyPreset(name){
+  const ps = PRESETS[name]; if (!ps) return;
+  for (const k in ps) setParam(k, ps[k]);
+}
 
 // ---- settings export / import (a block of text you can keep and paste back) ----------------------------------
 function exportSettings(){
