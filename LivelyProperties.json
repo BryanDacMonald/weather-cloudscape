@@ -11,7 +11,7 @@
   "location": {
     "type": "textbox",
     "value": "",
-    "text": "Location (city, or lat,lon; blank = detect from IP)"
+    "text": "Location: exact coordinates like 44.9778, -93.2650 work best (right-click your home in Google Maps); or a city / ZIP; blank = from IP"
   },
   "refresh": {
     "type": "button",
@@ -168,6 +168,33 @@
     "max": 4,
     "step": 0.1,
     "text": "Moon size (1 = real size)"
+  },
+  "lblAir": {
+    "type": "label",
+    "value": "Air traffic"
+  },
+  "flights": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Real-time aircraft (ADS-B data from adsb.lol)"
+  },
+  "contrails": {
+    "type": "checkbox",
+    "value": true,
+    "text": "Contrails (when the upper air is cold and humid enough)"
+  },
+  "planeSize": {
+    "type": "slider",
+    "value": 2,
+    "min": 1,
+    "max": 6,
+    "step": 0.1,
+    "text": "Aircraft size (1 = real size)"
+  },
+  "planeLabels": {
+    "type": "checkbox",
+    "value": false,
+    "text": "Flight labels (callsign, type, altitude)"
   },
   "lblPerf": {
     "type": "label",

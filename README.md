@@ -17,7 +17,7 @@ On first start the wallpaper finds your approximate location from your IP addres
 
 | Setting | What it does |
 |---|---|
-| Location | City name, `City, Country/State`, or `44.65, -63.57`. Blank = detect from IP. |
+| Location | Exact coordinates like `44.9778, -93.2650` work best (right-click your home in Google Maps to copy them), or a city name, `City, Country/State`, or ZIP code. Blank = detect from IP. Only a rounded (~1 km) location is ever sent to online services; the exact one is used on your PC to position the sun, Moon and aircraft. |
 | View faces | Compass direction the view looks toward. This decides where the sun rises and sets on screen and which way clouds drift. 180 = south, the best choice in the northern hemisphere. |
 | Cloud motion | Time-lapse factor for drifting clouds. 1 = true wind speed, which is almost imperceptibly slow. |
 | Background / Image | `Procedural landscape`, or `Image` plus a file from the dropdown. |
@@ -72,6 +72,19 @@ Settings: **Sky darkness** (City / Suburban / Rural / Dark site) sets how many s
 
 Accuracy: positions are good to a few arcminutes (a tenth of the Moon's width). `tools/test-sky.js` checks them against real events: the 2017 and 2024 total solar eclipses (computed Moon within 0.04° of the Sun's centre from the path of totality), the 2000 lunar eclipse, the 2020 Jupiter–Saturn great conjunction, and Mars's 2020 opposition. Star brightness is compressed to suit a screen, and the Moon is dimmed at night so its seas stay visible, the way your eye sees it.
 
+## Air traffic
+
+Real aircraft around you, from live ADS-B data ([adsb.lol](https://adsb.lol), falling back to [airplanes.live](https://airplanes.live)), updated every 10 seconds and moved smoothly in between:
+
+- **By day:** distant airliners are tiny dark specks, as in real life. Aircraft on approach that point toward you show their bright landing lights.
+- **By night:** red and green wingtip lights, the white tail light, the flashing red beacon and double-flash white strobes.
+- **Contrails:** drawn only when the upper air allows them, using the Schmidt-Appleman rule with live temperature and humidity at 250–300 hPa from Open-Meteo. They form below about −40 °C, and persist and spread, drifting with the high-altitude wind, when the air is saturated with respect to ice. Otherwise they're short or absent.
+- **Clouds and terrain** hide aircraft behind them.
+
+Settings: **Aircraft size** (1 = true size, which is two or three pixels for an airliner 30 km away), **Contrails**, **Flight labels** (callsign, type, flight level). For accurate positions, especially for low aircraft near an airport, enter your exact coordinates in **Location**.
+
+Coverage depends on volunteer receivers near you. Aircraft without ADS-B (some light aircraft) don't appear.
+
 ## Running it in a browser
 
 Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings panel: the wallpaper settings on top, then every Cloudscape renderer setting. Settings and your chosen image are saved in the browser. URL parameters also work, e.g. `index.html?location=Oslo&bgMode=Image&panel=1`.
@@ -79,7 +92,7 @@ Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings 
 ## Performance and privacy
 
 - This is a real-time raymarcher: it uses your GPU continuously. Lively pauses wallpapers when a fullscreen app or game is focused (check Lively's *Performance* settings). A dedicated GPU is recommended. Use **Low / 15 fps** on integrated graphics or battery.
-- Network requests: Open-Meteo (weather and city lookup) and, only if Location is blank, `get.geojs.io` / `ipapi.co` for IP-based location. These services see your IP address. Typing a location stops the IP lookup.
+- Network requests: Open-Meteo (weather, upper air and city lookup), adsb.lol or airplanes.live (aircraft, about 6 requests a minute while the wallpaper is visible) and, only if Location is blank, `get.geojs.io` / `ipapi.co` for IP-based location. These services see your IP address and a location rounded to about 1 km. Typing a location stops the IP lookup; turning off **Real-time aircraft** stops the flight requests.
 - Open-Meteo's free API is for non-commercial use (about 96 requests per day here).
 
 ## Files
@@ -96,4 +109,4 @@ Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings 
 
 ## License
 
-MIT. Original renderer © 2026 Michael Cook ([Cloudscape](https://github.com/Fishypants/cloudscape)). Weather data by [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0). Star data: Yale Bright Star Catalogue, 5th ed. (Hoffleit & Warren, public domain), via the JSON edition by Bretton Wade ([MIT](https://github.com/brettonw/YaleBrightStarCatalog)). Moon and planet positions: Paul Schlyter's method; planet magnitudes partly from Mallama & Hilton (2018).
+MIT. Original renderer © 2026 Michael Cook ([Cloudscape](https://github.com/Fishypants/cloudscape)). Weather data by [Open-Meteo.com](https://open-meteo.com/) (CC BY 4.0). Star data: Yale Bright Star Catalogue, 5th ed. (Hoffleit & Warren, public domain), via the JSON edition by Bretton Wade ([MIT](https://github.com/brettonw/YaleBrightStarCatalog)). Moon and planet positions: Paul Schlyter's method; planet magnitudes partly from Mallama & Hilton (2018). Aircraft data: [adsb.lol](https://adsb.lol) (ODbL 1.0) / [airplanes.live](https://airplanes.live).

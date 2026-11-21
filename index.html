@@ -114,6 +114,12 @@ const SCHEMA = [
   {id:'skyDark',  label:'Sky darkness', type:'select', options:['City','Suburban','Rural','Dark site'], v:'Suburban', on:NOP},
   {id:'starBright', label:'Star brightness', min:0, max:3, step:0.05, v:1, fmt:f2},
   {id:'moonScale', label:'Moon size', min:1, max:4, step:0.1, v:1, fmt:v=>v.toFixed(1)+'× real'},
+  {sec:'Air traffic'},
+  {id:'flights',  label:'Real-time aircraft (ADS-B, adsb.lol)', type:'check', v:true, on:()=>Flights.onToggle()},
+  {id:'flnote',   type:'note'},
+  {id:'contrails',label:'Contrails (when the upper air allows)', type:'check', v:true},
+  {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
+  {id:'planeLabels', label:'Flight labels', type:'check', v:false},
   {sec:'Wallpaper performance'},
   {id:'fpsCap',   label:'Frame cap',   type:'select', options:['10','15','20','30','60'], v:'30', on:NOP},
   {id:'interactive', label:'Mouse look / WASD fly (off for wallpaper use)', type:'check', v:false, on:()=>canvas.classList.toggle('interactive', P.interactive)},
@@ -259,7 +265,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','contrails','planeSize','planeLabels']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -1866,6 +1872,48 @@ const RG = 6360;
 // ------------------------------------------------------------------------------------
 // Programs
 // ------------------------------------------------------------------------------------
+
+// ---- aircraft: bodies, lights and contrails as soft points drawn into the HDR composite ----
+const VS_PLANES = HEADER + `
+layout(location = 0) in vec4 aPos;     // world position (km), point size (px)
+layout(location = 1) in vec4 aCol;     // colour or albedo, opacity
+layout(location = 2) in vec2 aInfo;    // distance from the eye (km), kind (0 light, 1 body, 2 contrail)
+uniform mat4 uViewProj;
+out vec4 vCol; out float vDist; flat out int vKind; out vec3 vWorld;
+void main(){
+  gl_Position = uViewProj * vec4(aPos.xyz, 1.0);
+  gl_PointSize = aPos.w;
+  vCol = aCol; vDist = aInfo.x; vKind = int(aInfo.y + 0.5); vWorld = aPos.xyz;
+}`;
+const FS_PLANES = HEADER + COMMON + `
+in vec4 vCol; in float vDist; flat in int vKind; in vec3 vWorld;
+uniform sampler2D uSceneDepth, uVol0, uVol3;
+uniform vec2 uLowSize, uFullSize;
+uniform float uAmbScale;   // sky light fades at night (else the night-sky floor x exposure makes them glow)
+out vec4 o;
+void main(){
+  vec2 pc = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(pc, pc);
+  if (r2 > 1.0) discard;
+  ivec2 fp = ivec2(gl_FragCoord.xy);
+  if (texelFetch(uSceneDepth, fp, 0).r < vDist) discard;            // behind terrain
+  ivec2 lp = clamp(ivec2(gl_FragCoord.xy / uFullSize * uLowSize), ivec2(0), ivec2(uLowSize) - 1);
+  float cT = texelFetch(uVol0, lp, 0).a, cD = texelFetch(uVol3, lp, 0).x;
+  float vis = (cD < vDist ? cT : 1.0) * exp(-vDist * 0.010 * uHaze); // behind cloud / through haze
+  float shape = exp(-r2 * 2.5);
+  vec3 P = vWorld + vec3(0.0, Rg, 0.0);
+  vec3 sunL = uSunIllum * uSunBright * transmittanceToSun(P, uSunDir) * max(uSunDir.y + 0.05, 0.0);
+  vec3 skyTop = texelFetch(uIrr, ivec2(1, 0), 0).rgb, skyBot = texelFetch(uIrr, ivec2(0, 0), 0).rgb;
+  if (vKind == 0){                                                   // light: additive
+    o = vec4(vCol.rgb * shape * vis, 0.0);
+  } else if (vKind == 1){                                            // fuselage: lit by sky and a little sun
+    vec3 L = vCol.r * ((skyBot * 0.55 + skyTop * 0.25) * uAmbScale + sunL * 0.012);
+    o = vec4(L, vCol.a * shape * vis);
+  } else {                                                           // contrail: ice crystals, forward-scattering sunlight
+    vec3 L = (skyTop * 0.9 + skyBot * 0.3) * uAmbScale + sunL * 0.035;
+    o = vec4(L, vCol.a * shape * vis);
+  }
+}`;
 const PR = {
   shape:    program(VS_FULL, FS_SHAPE, 'shape'),
   detail:   program(VS_FULL, FS_DETAIL, 'detail'),
@@ -1887,6 +1935,7 @@ const PR = {
   tree:     program(VS_TREE, FS_TREE, 'tree'),
   treeshadow: program(VS_TREE, FS_TREESHADOW, 'treeshadow'),
   foliage:  program(VS_FULL, FS_FOLIAGE, 'foliage'),
+  planes:   program(VS_PLANES, FS_PLANES, 'planes'),
 };
 
 // ------------------------------------------------------------------------------------
@@ -2340,6 +2389,9 @@ function render(now){
     uVol0: hc.tex[0], uVol1: hc.tex[1], uVol2: hc.tex[2], uVol3: hc.tex[3], uLowSize: S.low,
   });
 
+  // ---- aircraft (real-time ADS-B traffic) ----
+  Flights.draw(VP, eye, fov, hc);
+
   // ---- bloom ----
   let src = R.comp, sw = S.W, sh = S.H;
   for (let i = 0; i < R.bloom.length; i++){
@@ -2623,7 +2675,7 @@ const Weather = (() => {
     return loc;
   }
   async function fetchCurrent(loc){
-    const base = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat.toFixed(4)}&longitude=${loc.lon.toFixed(4)}&wind_speed_unit=ms&timezone=auto&current=`;
+    const base = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat.toFixed(2)}&longitude=${loc.lon.toFixed(2)}&wind_speed_unit=ms&timezone=auto&current=`;
     try { return (await getJSON(base + FULL)).current; }
     catch (e){ if (e.status === 400) return (await getJSON(base + MINI)).current; throw e; }   // a field was rejected: retry with the basics
   }
@@ -3319,6 +3371,238 @@ const Sky = (() => {
   return {update, moonLight: () => K.moonLight, active: () => K.active, state: K, rebuild: () => { K.key = ''; }};
 })();
 
+// ---- real-time air traffic: ADS-B positions from adsb.lol (fallback airplanes.live) ----------------------
+// Requests carry your location rounded to ~1 km; exact positions are computed here from your full-precision location.
+async function fetchJSON(url, ms = 20000){
+  const ac = new AbortController(), to = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(url, {signal: ac.signal, cache: 'no-store'});
+    if (!r.ok){ const e = new Error(`HTTP ${r.status} from ${new URL(url).host}`); e.status = r.status; throw e; }
+    return await r.json();
+  } catch (e){ if (e.name === 'AbortError') throw new Error(`timed out reaching ${new URL(url).host}`); throw e; }
+  finally { clearTimeout(to); }
+}
+const Flights = (() => {
+  const F = {ac: new Map(), err: '', src: '', timer: 0, fails: 0, upper: null, upperAt: 0, elev: null, count: 0, visible: 0, started: false};
+  const FT = 0.0003048, KT = 0.000514444, RE = 6371;             // ft -> km, knots -> km/s, Earth radius km
+  const SOURCES = [
+    (la, lo, r) => `https://api.adsb.lol/v2/point/${la}/${lo}/${r}`,
+    (la, lo, r) => `https://api.adsb.lol/v2/lat/${la}/lon/${lo}/dist/${r}`,
+    (la, lo, r) => `https://api.airplanes.live/v2/point/${la}/${lo}/${r}`,
+  ];
+  let srcIdx = 0;
+  // wingspan (m) by ADS-B emitter category
+  const SPAN = {A1: 11, A2: 20, A3: 34, A4: 38, A5: 60, A6: 15, A7: 11};
+  const hashPhase = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return (h % 1000) / 1000; };
+  const loc = () => Weather.state.loc;
+  function enu(lat, lon, upKm, L){
+    const E = (lon - L.lon) * Math.cos(L.lat * DEG) * 111.320, N = (lat - L.lat) * 110.574;
+    return [E, N, upKm - (E * E + N * N) / (2 * RE)];             // drop below the horizon with distance (Earth curvature)
+  }
+  async function fetchUpper(L){
+    const la = L.lat.toFixed(2), lo = L.lon.toFixed(2);
+    const j = await fetchJSON(`https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&hourly=temperature_300hPa,temperature_250hPa,relative_humidity_300hPa,relative_humidity_250hPa,wind_speed_250hPa,wind_direction_250hPa&wind_speed_unit=ms&forecast_days=2&timezone=GMT`);
+    if (typeof j.elevation === 'number') F.elev = j.elevation / 1000;
+    const h = j.hourly, now = new Date(), key = now.toISOString().slice(0, 13) + ':00';
+    const i = h && h.time ? Math.max(0, h.time.indexOf(key)) : -1;
+    if (i < 0) return;
+    const g = k => (h[k] || [])[i];
+    F.upper = {t300: g('temperature_300hPa'), t250: g('temperature_250hPa'), rh300: g('relative_humidity_300hPa'), rh250: g('relative_humidity_250hPa'),
+               ws: g('wind_speed_250hPa'), wd: g('wind_direction_250hPa')};
+    if (!Object.values(F.upper).every(v => typeof v === 'number')) F.upper = null;
+    F.upperAt = Date.now();
+  }
+  async function poll(){
+    clearTimeout(F.timer);
+    const L = loc();
+    if (!P.flights || !L || document.hidden){ F.timer = setTimeout(poll, 10000); return; }
+    if (Date.now() - F.upperAt > 30 * 60e3){ F.upperAt = Date.now(); fetchUpper(L).catch(e => console.warn('upper air:', e.message)); }
+    const la = L.lat.toFixed(2), lo = L.lon.toFixed(2);
+    let j = null, lastErr = '';
+    for (let k = 0; k < SOURCES.length && !j; k++){
+      const i = (srcIdx + k) % SOURCES.length;
+      try {
+        const r = await fetchJSON(SOURCES[i](la, lo, 45), 15000);
+        if (!r || !Array.isArray(r.ac)) throw new Error('unexpected response');
+        j = r; srcIdx = i; F.src = new URL(SOURCES[i](0, 0, 0)).host;
+      } catch (e){ lastErr = e.message; }
+    }
+    if (j){ ingest(j, L); F.err = ''; F.fails = 0; F.timer = setTimeout(poll, 10000); }
+    else { F.err = lastErr; F.fails++; F.timer = setTimeout(poll, Math.min(300, 15 * 2 ** F.fails) * 1000); console.warn('flights:', lastErr); }
+    note();
+  }
+  function ingest(j, L){
+    const now = performance.now();
+    let n = 0;
+    for (const a of j.ac){
+      if (typeof a.lat !== 'number' || typeof a.lon !== 'number' || a.alt_baro === 'ground' || !a.hex) continue;
+      const ft = typeof a.alt_geom === 'number' ? a.alt_geom : typeof a.alt_baro === 'number' ? a.alt_baro : null;
+      if (ft === null) continue;
+      const alt = ft * FT - (F.elev !== null ? F.elev : 0.25);         // above local ground
+      if (alt < 0.05) continue;
+      const age = typeof a.seen_pos === 'number' ? a.seen_pos : typeof a.seen === 'number' ? a.seen : 0;
+      if (age > 60) continue;
+      const trk = typeof a.track === 'number' ? a.track : typeof a.true_heading === 'number' ? a.true_heading : 0;
+      const gs = (typeof a.gs === 'number' ? a.gs : 0) * KT;
+      const vr = (typeof a.geom_rate === 'number' ? a.geom_rate : typeof a.baro_rate === 'number' ? a.baro_rate : 0) * FT / 60;
+      const p = enu(a.lat, a.lon, alt, L), v = [gs * Math.sin(trk * DEG), gs * Math.cos(trk * DEG), vr], t0 = now - age * 1000;
+      let s = F.ac.get(a.hex);
+      if (!s){ s = {hex: a.hex, hist: [], phase: hashPhase(a.hex), corr: [0, 0, 0], corrT: 0, histT: 0}; F.ac.set(a.hex, s); }
+      else {                                                            // blend from the predicted position to the new fix
+        const pred = pos(s, now), fresh = [p[0] + v[0] * (now - t0) / 1000, p[1] + v[1] * (now - t0) / 1000, p[2] + v[2] * (now - t0) / 1000];
+        s.corr = [pred[0] - fresh[0], pred[1] - fresh[1], pred[2] - fresh[2]]; s.corrT = now;
+        if (Math.hypot(...s.corr) > 3) s.corr = [0, 0, 0];             // big jump (new data source): just snap
+      }
+      Object.assign(s, {p, v, t0, trk, alt, seen: now, cat: a.category || '', call: (a.flight || '').trim() || a.r || a.hex, type: a.t || ''});
+      n++;
+    }
+    F.count = n;
+  }
+  function pos(s, t){
+    const dt = Math.min(60, (t - s.t0) / 1000), k = Math.max(0, 1 - (t - s.corrT) / 2000);
+    return [s.p[0] + s.v[0] * dt + s.corr[0] * k, s.p[1] + s.v[1] * dt + s.corr[1] * k, Math.max(0.02, s.p[2] + s.v[2] * dt + s.corr[2] * k)];
+  }
+  // contrails: Schmidt-Appleman threshold (~-40 C for modern engines); they persist where the air is saturated w.r.t. ice
+  function contrail(alt){
+    if (alt < 7) return null;
+    const u = F.upper;
+    let T, RH;
+    if (u){
+      const f = (alt - 9.16) / 1.2;                                     // 300 hPa ~ 9.16 km, 250 hPa ~ 10.36 km
+      T = u.t300 + (u.t250 - u.t300) * clamp(f, -2, 2);
+      RH = clamp(u.rh300 + (u.rh250 - u.rh300) * clamp(f, 0, 1), 0, 100);
+    } else { T = Math.max(-56.5, 15 - 6.5 * alt); RH = 40; }            // no upper-air data: standard atmosphere, short trails
+    if (T > -40) return null;
+    const ew = 6.112 * Math.exp(17.62 * T / (243.12 + T)), ei = 6.112 * Math.exp(22.46 * T / (272.62 + T));
+    const rhi = RH * ew / ei;
+    const persist = rhi >= 95;
+    return {persist, life: persist ? 900 : 10 + 25 * clamp((rhi - 50) / 45, 0, 1), spread: persist ? 3 : 0.8, op: persist ? 0.75 : 0.55};
+  }
+  // GL: one dynamic buffer of points, 10 floats each (pos xyz, size px, rgba, distance, kind)
+  const vao = gl.createVertexArray(), vbo = gl.createBuffer();
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 4, gl.FLOAT, false, 40, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 40, 16);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 40, 32);
+  gl.bindVertexArray(null);
+  const maxPt = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1] || 64;
+  let bufA = new Float32Array(4096 * 10), bufL = new Float32Array(1024 * 10);
+  const labelBox = document.createElement('div'); labelBox.style.cssText = 'position:fixed;inset:0;pointer-events:none;overflow:hidden';
+  document.body.insertBefore(labelBox, document.getElementById('flash'));
+  const labels = new Map();
+  function draw(VP, eye, fov, hc){
+    const L = loc();
+    if (!P.flights || !L || !F.ac.size){ hideLabels(new Set()); return; }
+    const now = performance.now(), pix = 2 * Math.tan(fov / 2) / S.H, sizeK = P.planeSize;
+    const cc = HOME_YAW + P.viewBearing * DEG, sc = Math.sin(cc), co = Math.cos(cc);
+    const toWorld = q => [eye[0] + sc * q[1] - co * q[0], eye[1] + q[2], eye[2] + co * q[1] + sc * q[0]];
+    const u = F.upper, wTo = u ? (u.wd + 180) * DEG : 0, wv = u ? [Math.sin(wTo) * u.ws / 1000, Math.cos(wTo) * u.ws / 1000] : [0, 0];
+    let nA = 0, nL = 0;
+    const push = (isLight, w, size, r, g, b, a, d, kind) => {
+      let buf = isLight ? bufL : bufA, n = isLight ? nL : nA;
+      if ((n + 1) * 10 > buf.length){ const nb = new Float32Array(buf.length * 2); nb.set(buf); buf = nb; if (isLight) bufL = nb; else bufA = nb; }
+      buf.set([w[0], w[1], w[2], Math.min(size, maxPt), r, g, b, a, d, kind], n * 10);
+      if (isLight) nL++; else nA++;
+    };
+    const t = now / 1000, seenLabels = new Set();
+    const day = smooth(-0.1, 0.15, G.uSunDir ? G.uSunDir[1] : 0), dayBoost = 1 + 3 * day;   // lights must compete with daylight
+    let vis = 0;
+    for (const [hex, s] of F.ac){
+      const ageS = (now - s.seen) / 1000;
+      if (ageS > 60){ F.ac.delete(hex); continue; }
+      const fade = clamp((60 - ageS) / 10, 0, 1);
+      const p = pos(s, now), w = toWorld(p), d = Math.hypot(w[0] - eye[0], w[1] - eye[1], w[2] - eye[2]);
+      // contrail history (ENU km), sampled every 0.5 s
+      const c = P.contrails ? contrail(p[2]) : null;
+      if (c && !s.hist.length){                                       // first sight: assume it flew straight for the last 90 s
+        const back = Math.min(c.life, 90);
+        for (let b = back; b > 0.5; b -= 2) s.hist.push({p: [p[0] - s.v[0] * b, p[1] - s.v[1] * b, p[2] - s.v[2] * b], t: now - b * 1000});
+      }
+      if (c && now - s.histT > 500){ s.hist.push({p, t: now}); s.histT = now; }
+      if (s.hist.length){
+        const life = c ? c.life : 30;
+        while (s.hist.length && (now - s.hist[0].t) / 1000 > life) s.hist.shift();
+        for (let k = 0; k < s.hist.length; k++){
+          const h = s.hist[k], a0 = (now - h.t) / 1000;
+          if (a0 < 0.4) continue;                                      // trails start a little behind the engines
+          const nxt = s.hist[k + 1] || {p, t: now};
+          const segKm = Math.hypot(nxt.p[0] - h.p[0], nxt.p[1] - h.p[1], nxt.p[2] - h.p[2]);
+          const widthKm = (0.03 + (c ? c.spread : 1) * a0 / 1000) * Math.sqrt(sizeK);
+          const steps = Math.min(16, Math.max(1, Math.ceil(segKm / (widthKm * 0.7))));
+          for (let m = 0; m < steps; m++){
+            const f = m / steps, a = a0 - f * (h.t - nxt.t) / -1000;
+            const q = [h.p[0] + (nxt.p[0] - h.p[0]) * f + wv[0] * a, h.p[1] + (nxt.p[1] - h.p[1]) * f + wv[1] * a, h.p[2] + (nxt.p[2] - h.p[2]) * f];
+            const qw = toWorld(q), qd = Math.hypot(qw[0] - eye[0], qw[1] - eye[1], qw[2] - eye[2]);
+            const wpx = widthKm / qd / pix;
+            const op = (c ? c.op : 0.5) * (1 - a / life) * fade * Math.min(1, wpx * 1.2 + 0.2);
+            if (op > 0.01) push(false, qw, clamp(wpx * 2.2, 1.5, 96), 0, 0, 0, op, qd, 2);
+          }
+        }
+      }
+      if (d > 110) continue;
+      // fuselage
+      const span = (SPAN[s.cat] || 34) / 1000, px = span / d / pix * sizeK;
+      push(false, w, Math.max(1.6, px * 1.3), 0.12, 0, 0, clamp(px * 1.1, 0.25, 1) * fade, d, 1);   // shaded underside: a dark speck
+      if (px > 0.05) vis++;
+      // lights (offsets scale with the size setting so they separate when enlarged)
+      const hx = Math.sin(s.trk * DEG), hy = Math.cos(s.trk * DEG), half = span / 2 * sizeK;
+      const at = (e, n) => toWorld([p[0] + e, p[1] + n, p[2]]);
+      const fall = Math.min(1, Math.pow(8 / d, 1.2)) * fade;
+      push(true, at(-hy * half, hx * half), 3, 0.014 * fall, 0, 0, 1, d, 0);                  // left wingtip: red
+      push(true, at(hy * half, -hx * half), 3, 0, 0.012 * fall, 0.004 * fall, 1, d, 0);       // right wingtip: green
+      push(true, at(-hx * half, -hy * half), 2.5, 0.008 * fall, 0.008 * fall, 0.008 * fall, 1, d, 0);   // tail: white
+      const ph = t + s.phase * 7;
+      if ((ph / 1.1) % 1 < 0.09) push(true, w, 4, 0.05 * fall, 0.004 * fall, 0, 1, d, 0);     // anti-collision beacon
+      const us = (ph / 1.3) % 1;
+      if (us < 0.04 || (us > 0.12 && us < 0.16)){                                               // double-flash strobes
+        const sI = 0.08 * fall * dayBoost;
+        push(true, at(-hy * half, hx * half), 4.5, sI, sI, sI * 1.06, 1, d, 0);
+        push(true, at(hy * half, -hx * half), 4.5, sI, sI, sI * 1.06, 1, d, 0);
+      }
+      if (p[2] < 3.5 && s.v[2] < 0.002){                                                        // landing lights, when pointed at us
+        const dl = Math.hypot(p[0], p[1], p[2]) || 1;
+        const toward = Math.max(0, -(p[0] * hx + p[1] * hy) / dl);
+        const I = 0.6 * Math.pow(toward, 6) * fall * (1 + 14 * day);
+        if (I > 0.002) push(true, at(hx * half * 0.5, hy * half * 0.5), 6, I, I * 0.97, I * 0.9, 1, d, 0);
+      }
+      if (P.planeLabels && d < 70) label(s, w, VP, seenLabels);
+    }
+    F.visible = vis;
+    hideLabels(seenLabels);
+    if (!nA && !nL) return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, R.compFB); gl.viewport(0, 0, S.W, S.H);
+    gl.colorMask(true, true, true, false); gl.enable(gl.BLEND);
+    use(PR.planes, {uViewProj: VP, uSceneDepth: R.tDepth, uVol0: hc.tex[0], uVol3: hc.tex[3], uLowSize: S.low, uFullSize: [S.W, S.H],
+                    uAmbScale: 0.08 + 0.92 * day + 0.4 * Sky.moonLight() * (1 - day)});
+    gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    const all = new Float32Array((nA + nL) * 10); all.set(bufA.subarray(0, nA * 10)); all.set(bufL.subarray(0, nL * 10), nA * 10);
+    gl.bufferData(gl.ARRAY_BUFFER, all, gl.STREAM_DRAW);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); if (nA) gl.drawArrays(gl.POINTS, 0, nA);
+    gl.blendFunc(gl.ONE, gl.ONE); if (nL) gl.drawArrays(gl.POINTS, nA, nL);
+    gl.bindVertexArray(null); gl.disable(gl.BLEND); gl.colorMask(true, true, true, true);
+  }
+  function label(s, w, VP, seen){
+    const x = VP[0] * w[0] + VP[4] * w[1] + VP[8] * w[2] + VP[12], y = VP[1] * w[0] + VP[5] * w[1] + VP[9] * w[2] + VP[13], cw = VP[3] * w[0] + VP[7] * w[1] + VP[11] * w[2] + VP[15];
+    if (cw <= 0) return;
+    const sx = (x / cw * 0.5 + 0.5) * innerWidth, sy = (0.5 - y / cw * 0.5) * innerHeight;
+    if (sx < -50 || sy < -20 || sx > innerWidth + 50 || sy > innerHeight + 20) return;
+    let el = labels.get(s.hex);
+    if (!el){ el = document.createElement('div'); el.style.cssText = 'position:absolute;color:rgba(255,255,255,.75);font:10px system-ui,sans-serif;text-shadow:0 1px 2px #000;white-space:nowrap;transform:translate(8px,-50%)'; labelBox.appendChild(el); labels.set(s.hex, el); }
+    const fl = Math.round((s.p[2] + (F.elev || 0)) / FT / 100);
+    const txt = `${s.call}${s.type ? ' · ' + s.type : ''} · FL${String(fl).padStart(3, '0')}`;
+    if (el.textContent !== txt) el.textContent = txt;
+    el.style.left = sx.toFixed(0) + 'px'; el.style.top = sy.toFixed(0) + 'px';
+    seen.add(s.hex);
+  }
+  function hideLabels(seen){ for (const [hex, el] of labels) if (!seen.has(hex)){ el.remove(); labels.delete(hex); } }
+  function note(){
+    setNote('flnote', !P.flights ? '' : F.err ? `Air traffic unavailable: ${F.err}` : F.src ? `${F.count} aircraft within 83 km (${F.src})${F.upper ? '' : ' · contrails use standard-atmosphere estimates'}` : 'Fetching air traffic…');
+  }
+  function start(){ if (!F.started){ F.started = true; poll(); } }
+  function onToggle(){ if (P.flights){ start(); poll(); } else { F.ac.clear(); hideLabels(new Set()); } note(); }
+  return {draw, start, onToggle, state: F, contrail};
+})();
+
 // ---- hosts: Lively Wallpaper, Wallpaper Engine, URL parameters, saved browser settings -------
 let hostSeen = false, bootT = 0;
 function applyExternal(name, val){
@@ -3346,6 +3630,7 @@ function boot(){
   canvas.classList.toggle('interactive', P.interactive);
   if (P.bgMode === 'Image' || P.bgImage) Bg.load(P.bgImage);
   Weather.init();
+  Flights.start();
   addEventListener('resize', () => Bg.rebuild());
   // in a plain browser (no wallpaper host has called us), point at the settings panel once
   setTimeout(() => {
