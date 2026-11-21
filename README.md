@@ -74,7 +74,7 @@ Accuracy: positions are good to a few arcminutes (a tenth of the Moon's width). 
 
 ## Air traffic
 
-Real aircraft around you, from live ADS-B data ([adsb.lol](https://adsb.lol), falling back to [airplanes.live](https://airplanes.live)), updated every 10 seconds and moved smoothly in between:
+Real aircraft within about 50 km, from live ADS-B data ([adsb.lol](https://adsb.lol), falling back to [airplanes.live](https://airplanes.live)), updated every 30 seconds by default (10 / 30 / 60 s setting) and moved smoothly in between. Updates stop whenever the wallpaper isn't being drawn (paused by Lively, a full-screen app, the screen off).
 
 - **By day:** distant airliners are tiny dark specks, as in real life. Aircraft on approach that point toward you show their bright landing lights.
 - **By night:** red and green wingtip lights, the white tail light, the flashing red beacon and double-flash white strobes.
@@ -92,7 +92,7 @@ Open `index.html` in Chrome, Edge or Firefox. Press **H** for the full settings 
 ## Performance and privacy
 
 - This is a real-time raymarcher: it uses your GPU continuously. Lively pauses wallpapers when a fullscreen app or game is focused (check Lively's *Performance* settings). A dedicated GPU is recommended. Use **Low / 15 fps** on integrated graphics or battery.
-- Network requests: Open-Meteo (weather, upper air and city lookup), adsb.lol or airplanes.live (aircraft, about 6 requests a minute while the wallpaper is visible) and, only if Location is blank, `get.geojs.io` / `ipapi.co` for IP-based location. These services see your IP address and a location rounded to about 1 km. Typing a location stops the IP lookup; turning off **Real-time aircraft** stops the flight requests.
+- Network requests: Open-Meteo (weather, upper air and city lookup), adsb.lol or airplanes.live (aircraft: 2 requests a minute by default, only while the wallpaper is being drawn; roughly 1–6 MB an hour near a busy airport) and, only if Location is blank, `get.geojs.io` / `ipapi.co` for IP-based location. These services see your IP address and a location rounded to about 1 km. Typing a location stops the IP lookup; turning off **Real-time aircraft** stops the flight requests.
 - Open-Meteo's free API is for non-commercial use (about 96 requests per day here).
 
 ## Files

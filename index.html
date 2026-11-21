@@ -117,6 +117,7 @@ const SCHEMA = [
   {sec:'Air traffic'},
   {id:'flights',  label:'Real-time aircraft (ADS-B, adsb.lol)', type:'check', v:true, on:()=>Flights.onToggle()},
   {id:'flnote',   type:'note'},
+  {id:'flightPoll', label:'Update every', type:'select', options:['10','30','60'], v:'30', on:NOP},
   {id:'contrails',label:'Contrails (when the upper air allows)', type:'check', v:true},
   {id:'planeSize',label:'Aircraft size', min:1, max:6, step:0.1, v:2, fmt:v=>v.toFixed(1)+'× real'},
   {id:'planeLabels', label:'Flight labels', type:'check', v:false},
@@ -265,7 +266,7 @@ function setNote(id, text){ const s = SCHEMA.find(x => x.id === id); if (s && s.
 // called after any user-facing change: run the control's hook and persist the user's choices
 const PERSIST = new Set(['liveWeather','location','manualCover','viewBearing','motion','precip','showWx','units','bgMode','bgImage',
   'maskMode','horizonAuto','horizon','feather','imgFov','relight','fpsCap','interactive','quality','dynres',
-  'realSky','planets','skyDark','starBright','moonScale','flights','contrails','planeSize','planeLabels']);
+  'realSky','planets','skyDark','starBright','moonScale','flights','flightPoll','contrails','planeSize','planeLabels']);
 let saveTimer = 0, booted = false;
 function settingChanged(id){
   const s = SCHEMA.find(x => x.id === id);
@@ -2691,6 +2692,7 @@ const Weather = (() => {
     W.busy = true; readout();
     try {
       const loc = await resolveLocation(force === true);
+      if (!W.loc) W.loc = loc;                    // sun, stars and aircraft can start even if the weather fetch fails
       const cur = await fetchCurrent(loc);
       if (!cur) throw new Error('no current conditions in the response');
       const locChanged = !W.loc || Math.abs(W.loc.lat - loc.lat) + Math.abs(W.loc.lon - loc.lon) > 0.5;
@@ -3391,6 +3393,9 @@ const Flights = (() => {
     (la, lo, r) => `https://api.airplanes.live/v2/point/${la}/${lo}/${r}`,
   ];
   let srcIdx = 0;
+  const RADIUS_NM = 27;                                             // ~50 km: beyond that an airliner is a pixel or two
+  const interval = () => +P.flightPoll * 1000;
+  const maxAge = () => Math.max(60, 2.5 * +P.flightPoll);           // keep dead-reckoning a missed plane this long (s)
   // wingspan (m) by ADS-B emitter category
   const SPAN = {A1: 11, A2: 20, A3: 34, A4: 38, A5: 60, A6: 15, A7: 11};
   const hashPhase = s => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return (h % 1000) / 1000; };
@@ -3415,19 +3420,22 @@ const Flights = (() => {
   async function poll(){
     clearTimeout(F.timer);
     const L = loc();
-    if (!P.flights || !L || document.hidden){ F.timer = setTimeout(poll, 10000); return; }
+    // skip while the wallpaper isn't being drawn (Lively paused it, a full-screen app, screen off):
+    // more reliable than document.hidden, which a desktop wallpaper may never report
+    const idle = performance.now() - lastT > 5000;
+    if (!P.flights || !L || document.hidden || idle){ F.timer = setTimeout(poll, 5000); return; }
     if (Date.now() - F.upperAt > 30 * 60e3){ F.upperAt = Date.now(); fetchUpper(L).catch(e => console.warn('upper air:', e.message)); }
     const la = L.lat.toFixed(2), lo = L.lon.toFixed(2);
     let j = null, lastErr = '';
     for (let k = 0; k < SOURCES.length && !j; k++){
       const i = (srcIdx + k) % SOURCES.length;
       try {
-        const r = await fetchJSON(SOURCES[i](la, lo, 45), 15000);
+        const r = await fetchJSON(SOURCES[i](la, lo, RADIUS_NM), 15000);
         if (!r || !Array.isArray(r.ac)) throw new Error('unexpected response');
         j = r; srcIdx = i; F.src = new URL(SOURCES[i](0, 0, 0)).host;
       } catch (e){ lastErr = e.message; }
     }
-    if (j){ ingest(j, L); F.err = ''; F.fails = 0; F.timer = setTimeout(poll, 10000); }
+    if (j){ ingest(j, L); F.err = ''; F.fails = 0; F.timer = setTimeout(poll, interval()); }
     else { F.err = lastErr; F.fails++; F.timer = setTimeout(poll, Math.min(300, 15 * 2 ** F.fails) * 1000); console.warn('flights:', lastErr); }
     note();
   }
@@ -3441,7 +3449,7 @@ const Flights = (() => {
       const alt = ft * FT - (F.elev !== null ? F.elev : 0.25);         // above local ground
       if (alt < 0.05) continue;
       const age = typeof a.seen_pos === 'number' ? a.seen_pos : typeof a.seen === 'number' ? a.seen : 0;
-      if (age > 60) continue;
+      if (age > maxAge()) continue;
       const trk = typeof a.track === 'number' ? a.track : typeof a.true_heading === 'number' ? a.true_heading : 0;
       const gs = (typeof a.gs === 'number' ? a.gs : 0) * KT;
       const vr = (typeof a.geom_rate === 'number' ? a.geom_rate : typeof a.baro_rate === 'number' ? a.baro_rate : 0) * FT / 60;
@@ -3459,7 +3467,7 @@ const Flights = (() => {
     F.count = n;
   }
   function pos(s, t){
-    const dt = Math.min(60, (t - s.t0) / 1000), k = Math.max(0, 1 - (t - s.corrT) / 2000);
+    const dt = Math.min(maxAge(), (t - s.t0) / 1000), k = Math.max(0, 1 - (t - s.corrT) / 2000);
     return [s.p[0] + s.v[0] * dt + s.corr[0] * k, s.p[1] + s.v[1] * dt + s.corr[1] * k, Math.max(0.02, s.p[2] + s.v[2] * dt + s.corr[2] * k)];
   }
   // contrails: Schmidt-Appleman threshold (~-40 C for modern engines); they persist where the air is saturated w.r.t. ice
@@ -3508,9 +3516,9 @@ const Flights = (() => {
     const day = smooth(-0.1, 0.15, G.uSunDir ? G.uSunDir[1] : 0), dayBoost = 1 + 3 * day;   // lights must compete with daylight
     let vis = 0;
     for (const [hex, s] of F.ac){
-      const ageS = (now - s.seen) / 1000;
-      if (ageS > 60){ F.ac.delete(hex); continue; }
-      const fade = clamp((60 - ageS) / 10, 0, 1);
+      const ageS = (now - s.seen) / 1000, mA = maxAge();
+      if (ageS > mA){ F.ac.delete(hex); continue; }
+      const fade = clamp((mA - ageS) / 10, 0, 1);
       const p = pos(s, now), w = toWorld(p), d = Math.hypot(w[0] - eye[0], w[1] - eye[1], w[2] - eye[2]);
       // contrail history (ENU km), sampled every 0.5 s
       const c = P.contrails ? contrail(p[2]) : null;
@@ -3596,7 +3604,7 @@ const Flights = (() => {
   }
   function hideLabels(seen){ for (const [hex, el] of labels) if (!seen.has(hex)){ el.remove(); labels.delete(hex); } }
   function note(){
-    setNote('flnote', !P.flights ? '' : F.err ? `Air traffic unavailable: ${F.err}` : F.src ? `${F.count} aircraft within 83 km (${F.src})${F.upper ? '' : ' · contrails use standard-atmosphere estimates'}` : 'Fetching air traffic…');
+    setNote('flnote', !P.flights ? '' : F.err ? `Air traffic unavailable: ${F.err}` : F.src ? `${F.count} aircraft within 50 km (${F.src}, every ${P.flightPoll} s)${F.upper ? '' : ' · contrails use standard-atmosphere estimates'}` : 'Fetching air traffic…');
   }
   function start(){ if (!F.started){ F.started = true; poll(); } }
   function onToggle(){ if (P.flights){ start(); poll(); } else { F.ac.clear(); hideLabels(new Set()); } note(); }

@@ -178,6 +178,16 @@
     "value": true,
     "text": "Real-time aircraft (ADS-B data from adsb.lol)"
   },
+  "flightPoll": {
+    "type": "dropdown",
+    "value": 1,
+    "text": "Aircraft update interval (seconds; longer = less data)",
+    "items": [
+      "10",
+      "30",
+      "60"
+    ]
+  },
   "contrails": {
     "type": "checkbox",
     "value": true,
