@@ -2250,7 +2250,7 @@ function duskExposure(L){
   const t = (x, a, b) => { const u = Math.max(0, Math.min(1, (x - a) / (b - a))); return u * u * (3 - 2 * u); };
   return 1 - 0.6 * t(el, -8, -2) * (1 - t(el, 4, 16));
 }
-const VERSION = '2.4.1';   // keep in step with LivelyInfo.json and the GitHub release tag
+const VERSION = '2.4.2';   // keep in step with LivelyInfo.json and the GitHub release tag
 const STAT = {fps: 0, gpuMs: null, timer: false, vol: [0, 0], idle: false};
 const DEG = Math.PI / 180, HOME_YAW = 295.83 * DEG, HOME_PITCH = 3.95 * DEG, HOME_POS = [-8.5514, 0.8047, -3.4189];
 function render(now){
@@ -3526,13 +3526,14 @@ void main(){
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(im, 0, 0, w, h);
     const d = x.getImageData(0, 0, w, h).data, N = w * h, on = new Uint8Array(N), lab = new Int32Array(N).fill(-1), q = new Int32Array(N), spots = [];
-    for (let i = 0; i < N; i++) on[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 > 128 && d[i * 4 + 3] > 128 ? 1 : 0;
+    for (let i = 0; i < N; i++) on[i] = Math.max(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]) > 128 && d[i * 4 + 3] > 128 ? 1 : 0;   // white or coloured spots
     for (let s0 = 0; s0 < N; s0++){
       if (!on[s0] || lab[s0] >= 0) continue;
-      let qh = 0, qt = 0, sx = 0, sy = 0; q[qt++] = s0; lab[s0] = s0;
-      while (qh < qt){ const i = q[qh++], xx = i % w; sx += xx; sy += (i / w) | 0;
+      let qh = 0, qt = 0, sx = 0, sy = 0, sr = 0, sb = 0; q[qt++] = s0; lab[s0] = s0;
+      while (qh < qt){ const i = q[qh++], xx = i % w; sx += xx; sy += (i / w) | 0; sr += d[i * 4]; sb += d[i * 4 + 2];
         for (const j of [xx > 0 ? i - 1 : -1, xx < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < N && on[j] && lab[j] < 0){ lab[j] = s0; q[qt++] = j; } }
-      spots.push({x: sx / qt / w, y: sy / qt / h, r: Math.max(1, Math.sqrt(qt / Math.PI)) / w, warm: 1});
+      const street = sb - sr > 60 * qt;                             // blue spot in the mask = a street light (cool, on all night)
+      spots.push({x: sx / qt / w, y: sy / qt / h, r: Math.max(1, Math.sqrt(qt / Math.PI)) / w, warm: street ? 0.8 : 1, street});
       if (spots.length > 400) break;
     }
     return spots;
@@ -3580,7 +3581,7 @@ void main(){
         if (!s.alwaysOn){ const late = hr >= 12 ? hr : hr + 24; lvl *= late > s.off ? 0 : 1; if (hr > 5 && hr < 12) lvl *= smooth(1, 0.3, dark); }
         if (lvl <= 0) continue;
         const px = r.x + s.x * r.w, py = r.y + s.y * r.h, rad = Math.max(1.5, s.r * r.w) * P.lightsSize;
-        const warmC = s.tint > 0.5 ? '255,196,120' : '255,214,160';
+        const warmC = s.street ? '205,222,255' : s.tint > 0.5 ? '255,196,120' : '255,214,160';   // LED street light ~4500 K; windows warm
         const g = x.createRadialGradient(px, py, 0, px, py, rad * 6);
         g.addColorStop(0, `rgba(${warmC},${(0.95 * lvl * P.lightsBright).toFixed(3)})`);
         g.addColorStop(0.12, `rgba(${warmC},${(0.55 * lvl * P.lightsBright).toFixed(3)})`);
